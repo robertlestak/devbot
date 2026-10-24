@@ -1,0 +1,316 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "devbot chart values",
+  "description": "Every key: docs/operating.md#helm-values. config is devbot's own config.yaml, which devbot checks itself at startup.",
+  "type": "object",
+  "additionalProperties": false,
+  "definitions": {
+    "env": {
+      "type": "object",
+      "additionalProperties": { "type": ["string", "number", "boolean"] }
+    },
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "repository": { "type": "string" },
+        "tag": { "type": ["string", "number"] }
+      }
+    },
+    "labels": {
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    },
+    "objects": {
+      "type": "array",
+      "items": { "type": "object" }
+    },
+    "resources": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "requests": { "type": "object" },
+        "limits": { "type": "object" }
+      }
+    },
+    "role": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "activeDeadlineSeconds": { "type": "integer", "minimum": 1 },
+        "serviceAccount": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "annotations": { "$ref": "#/definitions/labels" }
+          }
+        }
+      }
+    },
+    "cidrs": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  },
+  "properties": {
+    "commonLabels": { "$ref": "#/definitions/labels" },
+    "imagePullSecrets": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          { "type": "string", "minLength": 1 },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name"],
+            "properties": { "name": { "type": "string", "minLength": 1 } }
+          }
+        ]
+      }
+    },
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "repository": { "type": "string", "minLength": 1 },
+        "tag": { "type": ["string", "number"] },
+        "pullPolicy": { "enum": ["Always", "IfNotPresent", "Never"] },
+        "agents": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/definitions/image" }
+        }
+      }
+    },
+    "config": {
+      "type": "object",
+      "properties": {
+        "providers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "type"],
+            "properties": {
+              "name": { "type": "string", "minLength": 1 },
+              "type": { "enum": ["gitea", "github"] },
+              "url": { "type": "string" }
+            }
+          }
+        },
+        "redis": { "type": "object" },
+        "agents": { "type": "object" },
+        "listen": { "type": "string" },
+        "metrics_addr": { "type": "string" }
+      }
+    },
+    "secrets": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "forge": { "type": "string", "minLength": 1 },
+        "agents": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        },
+        "auth": { "type": "string" },
+        "redis": { "type": "string" }
+      }
+    },
+    "harnessEnv": { "$ref": "#/definitions/env" },
+    "agentEnv": { "$ref": "#/definitions/env" },
+    "podLabels": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "allowUnrestrictedPatch": { "type": "boolean" }
+      }
+    },
+    "services": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "readyTimeout": { "type": "string" },
+        "resources": { "$ref": "#/definitions/resources" },
+        "extraEgress": { "$ref": "#/definitions/objects" }
+      }
+    },
+    "ui": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "grafanaUrl": { "type": "string" }
+      }
+    },
+    "serve": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "replicas": { "type": "integer", "minimum": 0 },
+        "clusterIP": { "type": "string" },
+        "podDisruptionBudget": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "minAvailable": { "type": ["integer", "string"] }
+          }
+        },
+        "topologySpreadConstraints": { "$ref": "#/definitions/objects" },
+        "affinity": { "type": "object" },
+        "resources": { "$ref": "#/definitions/resources" }
+      }
+    },
+    "redis": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "image": { "type": "string", "minLength": 1 },
+        "existingSecret": { "type": "string" },
+        "maxmemory": { "type": "string" },
+        "persistence": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "size": { "type": "string" },
+            "storageClass": { "type": "string" }
+          }
+        },
+        "resources": { "$ref": "#/definitions/resources" },
+        "nodeSelector": { "$ref": "#/definitions/labels" },
+        "tolerations": { "$ref": "#/definitions/objects" },
+        "affinity": { "type": "object" }
+      }
+    },
+    "jobs": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "pollingInterval": { "type": "integer", "minimum": 1 },
+        "maxReplicaCount": { "type": "integer", "minimum": 1 },
+        "nodeSelector": { "$ref": "#/definitions/labels" },
+        "tolerations": { "$ref": "#/definitions/objects" },
+        "affinity": { "type": "object" },
+        "topologySpreadConstraints": { "$ref": "#/definitions/objects" },
+        "runtimeClassName": { "type": "string" },
+        "userNamespaces": { "type": "boolean" },
+        "implement": { "$ref": "#/definitions/role" },
+        "review": { "$ref": "#/definitions/role" },
+        "agentResources": { "$ref": "#/definitions/resources" },
+        "harnessResources": { "$ref": "#/definitions/resources" },
+        "modelProxyResources": { "$ref": "#/definitions/resources" }
+      }
+    },
+    "docker": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": { "type": "string" },
+        "detect": { "type": "boolean" },
+        "dind": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "image": { "type": "string", "minLength": 1 },
+            "acceptLooserSandbox": { "type": "boolean" },
+            "resources": { "$ref": "#/definitions/resources" },
+            "seccompProfile": { "type": "object" },
+            "appArmorProfile": { "type": "object" },
+            "tunPlugin": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": { "type": "boolean" },
+                "image": { "type": "string", "minLength": 1 },
+                "count": { "type": "integer", "minimum": 1 },
+                "pluginDirectory": { "type": "string" },
+                "resources": { "$ref": "#/definitions/resources" }
+              }
+            },
+            "tunResource": { "type": "string" }
+          }
+        }
+      }
+    },
+    "networkPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "modelAPI": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "claude": { "$ref": "#/definitions/cidrs" },
+            "codex": { "$ref": "#/definitions/cidrs" },
+            "bedrock": { "$ref": "#/definitions/cidrs" }
+          }
+        },
+        "egressProxy": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "url": { "type": "string" },
+            "cidr": { "type": "string" },
+            "namespace": { "type": "string" },
+            "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+            "noProxy": { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        "internet": { "type": "boolean" },
+        "privateCIDRs": { "$ref": "#/definitions/cidrs" },
+        "allow": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "cidr": { "type": "string" },
+              "namespace": { "type": "string" },
+              "ports": { "type": "array", "items": { "type": "integer", "minimum": 1, "maximum": 65535 } }
+            }
+          }
+        },
+        "extraEgress": { "$ref": "#/definitions/objects" },
+        "keda": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "namespace": { "type": "string" },
+            "podLabels": { "type": "object", "additionalProperties": { "type": ["string", "null"] } }
+          }
+        }
+      }
+    },
+    "virtualService": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "host": { "type": "string" },
+        "prefix": { "type": "string", "pattern": "^/" },
+        "gateway": { "type": "string" },
+        "trustedProxies": { "$ref": "#/definitions/cidrs" }
+      }
+    },
+    "ingress": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "className": { "type": "string" },
+        "host": { "type": "string" },
+        "annotations": { "$ref": "#/definitions/labels" },
+        "tls": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "secretName": { "type": "string" }
+          }
+        }
+      }
+    }
+  }
+}

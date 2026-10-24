@@ -1,0 +1,204 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- $np := .Values.networkPolicy }}
+{{- range $kind := list "implement" "review" }}
+{{- /* One policy per role, since each role's model proxy has its own
+upstream: the role's harness's API, or Bedrock. */ -}}
+{{- $harness := dig "agents" $kind "harness" "claude" $.Values.config }}
+{{- $aws := dig "agents" $kind "aws" dict $.Values.config }}
+{{- $api := ternary "bedrock" $harness (not (empty $aws)) }}
+{{- $modelAPI := index ($np.modelAPI | default dict) $api | default list }}
+{{- if not (or $modelAPI $np.egressProxy.url $np.internet) }}
+{{- fail (printf "networkPolicy.modelAPI.%s: the %s role's model proxy calls %s's API, whose addresses the chart doesn't know: list them, or set networkPolicy.egressProxy or networkPolicy.internet" $api $kind $api) }}
+{{- end }}
+---
+# Job pods reach DNS, Redis, the role's model API (for its model proxy) and
+# what networkPolicy allows, and nothing else: not the cluster, the LAN or
+# the internet, so whatever the model is talked into can't send what it
+# sees there. See docs/operating.md#egress. And nothing connects in: the
+# harness dials out to the run's service pod and relays it on the pod's
+# loopback, and a Docker pod's containers publish their ports on the pod.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $.Release.Name }}-{{ $kind }}
+  labels: {{- include "devbot.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $kind }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ $.Release.Name }}
+      app.kubernetes.io/component: {{ $kind }}
+  policyTypes: [Ingress, Egress]
+  egress:
+    - to:
+        - namespaceSelector: {}
+          podSelector: { matchLabels: { k8s-app: kube-dns } }
+      ports: [{ port: 53, protocol: UDP }, { port: 53, protocol: TCP }]
+    # The harness's Redis. The agent shares the pod's network, but not the
+    # harness's Redis credential, and Redis refuses anyone without one.
+    - to:
+        - podSelector: { matchLabels: { app.kubernetes.io/instance: {{ $.Release.Name }}, app.kubernetes.io/component: redis } }
+    {{- if eq (include "devbot.services" $) "true" }}
+    # Service pods, which admit only their own run's job pod: each has a
+    # policy of its own that serve creates with it, and the one below
+    # denies everything else.
+    - to:
+        - podSelector: { matchLabels: { app.kubernetes.io/instance: {{ $.Release.Name }}, app.kubernetes.io/component: services } }
+    {{- end }}
+    {{- with $modelAPI }}
+    # The model proxy's upstream.
+    - to:
+        {{- range . }}
+        - ipBlock: { cidr: {{ . | quote }} }
+        {{- end }}
+      ports: [{ port: 443, protocol: TCP }]
+    {{- end }}
+    {{- if eq (dig "auth" "" $aws) "pod_identity" }}
+    # The EKS Pod Identity agent on the node, link-local, where the model
+    # proxy fetches its credential.
+    - to:
+        - ipBlock: { cidr: 169.254.170.23/32 }
+        - ipBlock: { cidr: "fd00:ec2::23/128" }
+      ports: [{ port: 80, protocol: TCP }]
+    {{- end }}
+    {{- with $np.egressProxy }}
+    {{- if .url }}
+    # The HTTP(S) egress proxy everything else goes through.
+    - to:
+        {{- if .cidr }}
+        - ipBlock: { cidr: {{ .cidr }} }
+        {{- else if .namespace }}
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: {{ .namespace }} } }
+        {{- else }}
+        {{- fail "networkPolicy.egressProxy: with url, set cidr or namespace: where the proxy is" }}
+        {{- end }}
+      ports: [{ port: {{ .port }}, protocol: TCP }]
+    {{- end }}
+    {{- end }}
+    {{- if $np.internet }}
+    # Any public address, for self-provisioning from arbitrary registries.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              {{- range $np.privateCIDRs }}
+              {{- if not (contains ":" .) }}
+              - {{ . }}
+              {{- end }}
+              {{- end }}
+        - ipBlock:
+            cidr: "::/0"
+            except:
+              {{- range $np.privateCIDRs }}
+              {{- if contains ":" . }}
+              - {{ . | quote }}
+              {{- end }}
+              {{- end }}
+    {{- end }}
+    {{- range $np.allow }}
+    - to:
+        {{- if .cidr }}
+        - ipBlock: { cidr: {{ .cidr | quote }} }
+        {{- else if .namespace }}
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: {{ .namespace }} } }
+        {{- end }}
+      {{- with .ports }}
+      ports:
+        {{- range . }}
+        - { port: {{ . }}, protocol: TCP }
+        {{- end }}
+      {{- end }}
+    {{- end }}
+    {{- /* The MCP servers this role is given, when their URL names an
+    address. A hostname can't be resolved here: list its address in
+    networkPolicy.allow. */}}
+    {{- $catalog := $.Values.config.mcp_servers | default dict }}
+    {{- range dig "agents" $kind "mcp_servers" list $.Values.config | uniq | sortAlpha }}
+    {{- with index $catalog . }}
+    {{- $u := urlParse .url }}
+    {{- $cidr := "" }}
+    {{- if regexMatch `^[0-9]+(\.[0-9]+){3}$` $u.hostname }}{{ $cidr = printf "%s/32" $u.hostname }}
+    {{- else if contains ":" $u.hostname }}{{ $cidr = printf "%s/128" ($u.hostname | trimPrefix "[" | trimSuffix "]") }}{{ end }}
+    {{- if $cidr }}
+    {{- $port := regexFind `:[0-9]+$` $u.host | trimPrefix ":" | default (ternary "443" "80" (eq $u.scheme "https")) }}
+    - to:
+        - ipBlock: { cidr: {{ $cidr | quote }} }
+      ports: [{ port: {{ $port }}, protocol: TCP }]
+    {{- end }}
+    {{- end }}
+    {{- end }}
+    {{- with $np.extraEgress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end }}
+{{- if eq (include "devbot.services" .) "true" }}
+---
+# Service pods take no ingress but what the policy serve creates with each
+# admits (its own run's job pod, at its ports), and reach only DNS and
+# services.extraEgress. Policies only add to what is allowed, so another
+# run's job pod is never let in.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-services
+  labels: {{- include "devbot.labels" . | nindent 4 }}
+    app.kubernetes.io/component: services
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: services
+  policyTypes: [Ingress, Egress]
+  ingress: []
+  egress:
+    - to:
+        - namespaceSelector: {}
+          podSelector: { matchLabels: { k8s-app: kube-dns } }
+      ports: [{ port: 53, protocol: UDP }, { port: 53, protocol: TCP }]
+    {{- with .Values.services.extraEgress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end }}
+{{- if .Values.redis.enabled }}
+---
+# The bundled Redis takes connections from this release's serve and job
+# pods (the harness) and KEDA's operator, which reads the queue lengths,
+# and nobody else, password or not.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-redis
+  labels: {{- include "devbot.labels" . | nindent 4 }}
+    app.kubernetes.io/component: redis
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: redis
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: { app.kubernetes.io/instance: {{ .Release.Name }} }
+            matchExpressions: [{ key: app.kubernetes.io/component, operator: In, values: [serve, implement, review] }]
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: {{ required "networkPolicy.keda.namespace: where KEDA's operator runs, which reads the queue lengths from Redis" .Values.networkPolicy.keda.namespace }} } }
+          podSelector: { matchLabels: {{ .Values.networkPolicy.keda.podLabels | toJson }} }
+      ports: [{ port: 6379, protocol: TCP }]
+{{- end }}
+{{- if and .Values.docker.mode .Values.docker.dind.tunPlugin.enabled }}
+---
+# The TUN device plugin talks to the kubelet over a unix socket alone.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $.Release.Name }}-tun-plugin
+  labels: {{- include "devbot.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: tun-plugin
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ $.Release.Name }}
+      app.kubernetes.io/component: tun-plugin
+  policyTypes: [Ingress, Egress]
+{{- end }}
+{{- end }}

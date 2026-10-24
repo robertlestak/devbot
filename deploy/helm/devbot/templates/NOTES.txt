@@ -1,0 +1,68 @@
+{{- $ns := .Release.Namespace }}
+{{- $base := printf "http://%s.%s.svc.cluster.local" .Release.Name $ns }}
+{{- if and .Values.ingress.enabled .Values.ingress.host }}
+{{- $base = printf "https://%s" .Values.ingress.host }}
+{{- else if and .Values.virtualService.enabled .Values.virtualService.host }}
+{{- $base = printf "https://%s%s" .Values.virtualService.host (.Values.virtualService.prefix | trimSuffix "/") }}
+{{- end }}
+devbot is installed as {{ .Release.Name }} in namespace {{ $ns }}.
+
+serve is at {{ $base }}{{ if not (or .Values.ingress.enabled .Values.virtualService.enabled) }} (in the cluster only:
+expose it with ingress or virtualService for a forge or clients outside it){{ end }}.
+{{- range .Values.config.providers }}
+  Webhook:   {{ $base }}/webhooks/{{ .name }}
+{{- end }}
+  MCP:       {{ $base }}/mcp
+{{- if dig "ui" "enabled" .Values.ui.enabled .Values.config }}
+  Web UI:    {{ $base }}/ui/
+{{- end }}
+
+It reads these Secrets in {{ $ns }}, which you create (docs/operating.md#secrets):
+{{- $forge := list }}
+{{- range .Values.config.providers }}
+{{- range $k, $v := . }}{{ if and (hasSuffix "_env" $k) $v }}{{ $forge = append $forge $v }}{{ end }}{{ end }}
+{{- end }}
+  {{ .Values.secrets.forge }}: {{ $forge | uniq | sortAlpha | join ", " }}
+{{- $harnesses := dict }}
+{{- range $kind := list "implement" "review" }}
+{{- $aws := dig "agents" $kind "aws" "auth" "" $.Values.config }}
+{{- if not (has $aws (list "irsa" "pod_identity")) }}
+{{- $h := dig "agents" $kind "harness" "claude" $.Values.config }}
+{{- $keys := ternary "CODEX_API_KEY" "CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY" (eq $h "codex") }}
+{{- if eq $aws "access_keys" }}{{ $keys = "AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY" }}{{ end }}
+{{- $_ := set $harnesses (index $.Values.secrets.agents $h) $keys }}
+{{- end }}
+{{- end }}
+{{- range $secret, $keys := $harnesses }}
+  {{ $secret }}: {{ $keys }}
+{{- end }}
+{{- with .Values.secrets.auth }}
+  {{ . }}: {{ list (dig "auth" "client_id_env" "" $.Values.config) (dig "auth" "client_secret_env" "" $.Values.config) (dig "auth" "key_env" "" $.Values.config) | compact | join ", " }}
+{{- end }}
+{{- with .Values.secrets.redis }}
+  {{ . }}: {{ list (dig "redis" "sentinel" "password_env" "" $.Values.config) (dig "redis" "tls" "ca_env" "" $.Values.config) | compact | join ", " }}
+{{- end }}
+{{- with .Values.redis.existingSecret }}
+  {{ . }}: serve-password, harness-password, keda-password
+{{- end }}
+
+Check it:
+  kubectl -n {{ $ns }} rollout status deployment/{{ .Release.Name }}
+  kubectl -n {{ $ns }} get scaledjobs -l app.kubernetes.io/instance={{ .Release.Name }}
+  kubectl -n {{ $ns }} port-forward service/{{ .Release.Name }} 8080:80 &
+  curl -fsS http://localhost:8080/readyz
+{{- $np := .Values.networkPolicy }}
+{{- if and $np.enabled (not (or $np.allow $np.extraEgress $np.egressProxy.url $np.internet)) }}
+
+WARNING: networkPolicy allows job pods nothing beyond DNS, Redis and the model
+APIs, so the harness can't reach the forge and every job will fail at clone.
+Allow the forge in networkPolicy.allow, or set networkPolicy.egressProxy.
+See docs/operating.md#egress.
+{{- end }}
+{{- if and .Values.jobs.userNamespaces (semverCompare "<1.33.0-0" .Capabilities.KubeVersion.Version) }}
+
+WARNING: jobs.userNamespaces is on, but this cluster is Kubernetes
+{{ .Capabilities.KubeVersion.Version }}: user namespaces need 1.33 or later (or the UserNamespacesSupport
+gate), so job pods won't start. Set jobs.userNamespaces false, or see
+docs/operating.md#security.
+{{- end }}

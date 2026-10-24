@@ -1,0 +1,28 @@
+{{define "layout"}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="same-origin">
+<title>devbot: {{.Title}}</title>
+<link rel="stylesheet" href="static/app.css">
+<script src="static/app.js" defer></script>
+</head>
+<body>
+<header>
+<nav>
+<a class="brand" href="./">devbot</a>
+<a href="./"{{if eq .Page "jobs"}} aria-current="page"{{end}}>Running</a>
+<a href="tasks"{{if eq .Page "tasks"}} aria-current="page"{{end}}>Tasks</a>
+<a href="events"{{if eq .Page "events"}} aria-current="page"{{end}}>Events</a>
+{{with .Grafana}}<a href="{{.}}" rel="noopener noreferrer">Grafana</a>{{end}}
+</nav>
+{{if .Login}}<form class="who" method="post" action="logout"><input type="hidden" name="csrf" value="{{.CSRF}}"><span>@{{.Login}}</span> <button type="submit">Sign out</button></form>{{end}}
+</header>
+{{block "filters" .}}{{end}}
+<main{{if .Refresh}} data-refresh="{{.Refresh}}"{{end}}>
+{{template "main" .}}
+<p class="updated">Updated <time datetime="{{iso .Now}}">{{clock .Now}}</time>{{if .Refresh}}, refreshing every {{.Refresh}}s{{end}}.</p>
+</main>
+</body>
+</html>{{end}}

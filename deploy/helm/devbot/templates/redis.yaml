@@ -1,0 +1,111 @@
+{{- if .Values.redis.enabled }}
+{{- if not .Values.redis.existingSecret }}
+{{- /* Generated once: an upgrade keeps the passwords already there. */}}
+{{- $old := (lookup "v1" "Secret" .Release.Namespace (printf "%s-redis" .Release.Name)).data | default dict }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-redis
+  labels: {{- include "devbot.labels" . | nindent 4 }}
+    app.kubernetes.io/component: redis
+type: Opaque
+data:
+  {{- range $user := list "serve" "harness" "keda" }}
+  {{ $user }}-password: {{ index $old (printf "%s-password" $user) | default (randAlphaNum 40 | b64enc) }}
+  {{- end }}
+---
+{{- end }}
+# Not authoritative (D5): losing it costs one reconcile pass, and, without
+# persistence, everyone's connector sign-in.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-redis
+  labels: {{- include "devbot.labels" . | nindent 4 }}
+    app.kubernetes.io/component: redis
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app.kubernetes.io/name: devbot, app.kubernetes.io/instance: {{ .Release.Name }}, app.kubernetes.io/component: redis }
+  template:
+    metadata:
+      labels: {{- include "devbot.labels" . | nindent 8 }}
+        app.kubernetes.io/component: redis
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      {{- with include "devbot.imagePullSecrets" . | trim }}{{ . | nindent 6 }}{{ end }}
+      {{- with .Values.redis.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.redis.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.redis.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: redis
+          image: {{ .Values.redis.image }}
+          # The ACL, with the passwords from the Secret, goes in on stdin, so
+          # it is never on disk or in the process's arguments. noeviction:
+          # past maxmemory, writes fail and devbot says so; nothing it relies
+          # on disappears.
+          command: [sh, -c]
+          args:
+            - |
+              pw() { printf %s "$1" | sha256sum | cut -d' ' -f1; }
+              exec redis-server - --save "" {{ if .Values.redis.persistence.enabled }}--appendonly yes --appendfsync everysec --dir /data{{ else }}--appendonly no{{ end }} --maxmemory {{ required "redis.maxmemory is required" .Values.redis.maxmemory | squote }} --maxmemory-policy noeviction <<EOF
+              {{- include "devbot.redisACL" . | nindent 14 }}
+              EOF
+          env:
+            {{- range $user := list "serve" "harness" "keda" }}
+            - name: {{ $user | upper }}_PASSWORD
+              valueFrom: { secretKeyRef: { name: {{ include "devbot.redisSecret" $ }}, key: {{ $user }}-password } }
+            {{- end }}
+          {{- if .Values.redis.persistence.enabled }}
+          volumeMounts:
+            - { name: data, mountPath: /data }
+          {{- end }}
+          ports: [{ name: redis, containerPort: 6379 }]
+          readinessProbe:
+            exec: { command: [sh, -c, 'REDISCLI_AUTH="$SERVE_PASSWORD" redis-cli --user devbot-serve ping | grep -q PONG'] }
+            periodSeconds: 10
+          resources: {{- toYaml .Values.redis.resources | nindent 12 }}
+      {{- if .Values.redis.persistence.enabled }}
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: {{ .Release.Name }}-redis }
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-redis
+  labels: {{- include "devbot.labels" . | nindent 4 }}
+spec:
+  selector: { app.kubernetes.io/name: devbot, app.kubernetes.io/instance: {{ .Release.Name }}, app.kubernetes.io/component: redis }
+  ports: [{ name: redis, port: 6379, targetPort: redis }]
+{{- if .Values.redis.persistence.enabled }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-redis
+  labels: {{- include "devbot.labels" . | nindent 4 }}
+    app.kubernetes.io/component: redis
+  # Kept when the release is uninstalled, like the sign-ins on it.
+  annotations: { helm.sh/resource-policy: keep }
+spec:
+  accessModes: [ReadWriteOnce]
+  {{- with .Values.redis.persistence.storageClass }}
+  storageClassName: {{ . }}
+  {{- end }}
+  resources:
+    requests: { storage: {{ .Values.redis.persistence.size }} }
+{{- end }}
+{{- end }}

@@ -1,0 +1,177 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/robertlestak/devbot/main/docs/devbot.schema.json",
+  "title": ".devbot.yaml",
+  "description": "A repo's opt-in to devbot and its policy. Reference: docs/devbot-yaml.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "$defs": {
+    "duration": {
+      "type": "string",
+      "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$",
+      "description": "Go duration, e.g. 90s, 20m, 1h30m"
+    },
+    "nonNegInt": { "type": "integer", "minimum": 0 },
+    "posInt": { "type": "integer", "minimum": 1 }
+  },
+  "properties": {
+    "version": { "type": "integer", "const": 1, "description": "Schema version." },
+    "enabled": { "type": "boolean", "default": true, "description": "false opts the repo out of devbot." },
+    "base_branch": { "type": "string", "pattern": "^[A-Za-z0-9_+@][A-Za-z0-9._/+@-]*$", "description": "Base branch of every task that doesn't name its own (file_task base, retarget, a PR base changed on the forge, a carried PR's base): the implementer branches from it, the PR targets it, and the rebase queue, branch rules and merge use it. Unset, the default branch. Recorded on each task when devbot accepts it, so changing it doesn't move tasks in flight. A branch the repo doesn't have stops the task at needs-human. This file is still read from the default branch only." },
+    "automerge": { "type": "boolean", "default": false, "description": "Merge PRs that pass the merge gate. Otherwise they wait at devbot/approved, unless the issue has devbot/automerge (see task_automerge)." },
+    "task_automerge": { "type": "boolean", "default": true, "description": "Let a single task ask to be merged with the devbot/automerge label (file_task automerge: true) when automerge is false. It still has to pass the whole merge gate. false ignores the label." },
+    "merge_method": {
+      "type": "string", "default": "squash",
+      "enum": ["merge", "rebase", "rebase-merge", "squash", "fast-forward-only"],
+      "description": "Passed to the forge's merge API. Gitea accepts all of these; GitHub accepts merge, squash and rebase."
+    },
+    "require_checks": { "type": "boolean", "default": true, "description": "Require checks on the PR head before merging: with none at all, wait 10 minutes from the last push, then needs-human. Checks the branch rules require are waited for either way." },
+    "checks_pending_timeout": { "$ref": "#/$defs/duration", "default": "2h", "description": "How long checks may stay pending on a PR head, from when devbot first saw that head's checks pending (so any push starts it over), its last re-run of them or the last retry, before the task stops at needs-human naming them. Set it above the slowest CI run. 0 or unset is the default; a negative is refused." },
+    "max_attempts": { "$ref": "#/$defs/posInt", "default": 3, "description": "Failed implement attempts before needs-human. Usage limits don't count. 0 or unset is the default." },
+    "check_retries": { "$ref": "#/$defs/nonNegInt", "default": 2, "description": "Times the model is resumed with failing check output within one attempt." },
+    "max_replans": { "$ref": "#/$defs/nonNegInt", "default": 2, "description": "On a parent task filed with plan: times it is planned again because a child asked to change the contract, before needs-human." },
+    "max_review_rounds": { "$ref": "#/$defs/posInt", "default": 3, "description": "Fix rounds (review, CI, rebase) per PR before needs-human. A clean rebase (changes unchanged, approved and green again) doesn't count. 0 or unset is the default." },
+    "max_rebase_rounds": { "$ref": "#/$defs/posInt", "default": 10, "description": "Clean rebases per PR before needs-human. They don't count towards max_review_rounds. 0 or unset is the default." },
+    "rebase": { "type": "string", "default": "lazy", "enum": ["lazy", "eager"], "description": "When an approved PR behind its base is rebased. lazy: when it is about to merge (with automerge, one PR per base branch at a time, oldest approval first) or someone asks (devbot/rebase, /rebase, the rebase connector action). eager: as soon as the base moves." },
+    "setup": { "type": "array", "items": { "type": "string" }, "description": "Runtime setup hints shown to the implementer. Not executed by devbot." },
+    "checks": { "type": "array", "items": { "type": "string" }, "description": "Shell commands that must pass before a PR is opened, run after sourcing .devbot/setup.sh." },
+    "protected_paths": {
+      "type": "array", "items": { "type": "string" },
+      "default": [".github/**", ".gitea/**", ".forgejo/**", ".gitlab-ci.yml", ".gitlab/**", ".circleci/**", ".buildkite/**", "Jenkinsfile", ".pre-commit-config.yaml",
+        ".gitmodules", ".gitattributes", "CODEOWNERS"],
+      "description": "Globs a change may not touch without a person: devbot never pushes work that touches one on its own say (a file on approvable_paths waits for a person's approval, the rest stops at needs-human), and the merge gate stops a PR that does, but for approvable files holding what an approval approved. Setting it replaces the default list. .devbot.yaml and the agent-config paths (**/.devbot/**, **/.claude/**, **/.codex/**, .mcp.json, CLAUDE.md, CLAUDE.local.md, AGENTS.md) are always included, at any depth, and a new or retargeted symlink or a submodule change always counts."
+    },
+    "approvable_paths": {
+      "type": "array", "items": { "type": "string" },
+      "default": [".github/**", ".gitea/**", ".forgejo/**", ".gitlab-ci.yml", ".gitlab/**", ".circleci/**", ".buildkite/**", "Jenkinsfile"],
+      "description": "Protected paths a person may approve a change to: devbot holds such work unpushed at devbot/needs-approval, with its diff and a risk read on the issue, and pushes it once someone who can direct devbot approves exactly that content (devbot/approve or approve_task). A later push or the merge gate is held to the approved content. Only paths also protected count, and CODEOWNERS and .gitattributes, at any depth, never do; [] sends every protected change to needs-human. An always-protected path (.devbot.yaml, agent config), or a path inside one, makes the file invalid."
+    },
+    "authorized_users": { "type": "array", "items": { "type": "string" }, "description": "Narrows who may direct devbot on this repo: a person needs forge permission and a place on this list. Never grants access on its own; logins match in any case; empty means no narrowing. The bots are always authorized." },
+    "required_reviewers": { "type": "array", "items": { "type": "string" }, "description": "Logins (other review bots, say) that must each approve the current head before devbot merges, on top of devbot's reviewer. Until then the PR waits at devbot/approved, up to checks_pending_timeout, then needs-human naming who is missing. A request_changes from one on the head is a fix round; a push needs fresh approvals. Their reviews count in the merge gate only: they can't direct devbot." },
+    "human_checks": { "type": "array", "items": { "type": "string" }, "description": "Check names (globs) only a person can make pass: a CLA, a manual sign-off. One failing or pending starts no fix round and uses no round or checks_pending_timeout; the PR waits at devbot/approved naming it, and carries on once it passes. It never merges while one isn't green." },
+    "trusted_reviewers": { "type": "array", "items": { "type": "string" }, "description": "Logins (review bots, say) whose request_changes review on the PR's current head counts like an authorized person's: it sends the PR back for a fix round and holds the merge until dismissed or that login approves a later head. Grants nothing else; needs no forge permission; logins match in any case." },
+    "generated_paths": { "type": "array", "items": { "type": "string" }, "description": "Globs of generated files (build output, bundles). Like linguist-generated in the base branch's .gitattributes, they are listed in the reviewer's index without their content, and the reviewer reviews the source behind them and rebuilds them where it can. Read from the default branch, never from a PR's head." },
+    "review_budget_kib": { "$ref": "#/$defs/posInt", "default": 512, "description": "KiB of patch content, of the files that aren't generated, a review is given. Past it no review runs: the task stops at needs-human with the sizes. 0 or unset is the default." },
+    "docker": { "type": "boolean", "description": "Give each implement and review run a Docker daemon of its own at DOCKER_HOST, for tests that start containers (testcontainers, docker compose): true on, false off. Unset, devbot turns it on when the task's base branch has a testcontainers dependency or a Compose file (docker.detect). Only where the install runs one (docker.mode) and repos.limits.docker allows it." },
+    "pull_requests": {
+      "type": "object", "additionalProperties": false,
+      "description": "Pull requests devbot didn't open, handed to it with devbot/ready.",
+      "properties": {
+        "enabled": { "type": "boolean", "default": true, "description": "Whether devbot carries a PR it didn't open to merge when an authorized person adds devbot/ready to it. false: the label gets a short comment saying PR adoption is off and comes off. Off whatever this says where repos.limits.pull_requests.enabled is false." },
+        "forks": { "type": "boolean", "default": true, "description": "Whether that goes for a PR from a fork too: devbot works on the fork's branch when its author allows edits by maintainers, and otherwise on a devbot/pr-<N> branch of this repo with a new PR that supersedes theirs. Only where enabled is on as well. false: the label on a fork's PR gets a short comment saying PRs from forks aren't adopted and comes off. Off whatever this says where repos.limits.pull_requests.forks is false." }
+      }
+    },
+    "labels": {
+      "type": "object",
+      "description": "Static labels attributing this repo's work for cost and usage reporting: on job pods as labels.devbot.io/<key>, in log records and usage lines, and on metrics for keys the install lists in metrics.static_labels.",
+      "propertyNames": { "pattern": "^[a-z]([a-z0-9_]{0,61}[a-z0-9])?$" },
+      "additionalProperties": {
+        "type": ["string", "integer"],
+        "pattern": "^(([A-Za-z0-9][-A-Za-z0-9_.]{0,61})?[A-Za-z0-9])?$",
+        "description": "A Kubernetes label value: at most 63 of A-Z a-z 0-9 - _ ., alphanumeric at each end."
+      }
+    },
+    "commits": {
+      "type": "object", "additionalProperties": false,
+      "description": "How the commits devbot pushes credit the agent, and which trailers they carry. Each key unset takes the install's repos.defaults.commits; both unset leaves the agent's commit messages as it wrote them.",
+      "properties": {
+        "co_authored_by": { "type": "boolean", "description": "Unset: the agent CLI's own default. false: no AI co-author trailer (noreply@anthropic.com, noreply@openai.com) and no \"Generated with ...\" line in the commits devbot pushes or the PR it writes; a person's Co-authored-by stays. true: each commit carries the co-author trailer of the CLI that ran, once." },
+        "trailers": {
+          "type": "array",
+          "description": "Trailers added to every commit devbot pushes for a task, each once, e.g. \"Signed-off-by: devbot <devbot@example.com>\" for a DCO. [] means none, whatever the install's default.",
+          "items": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9-]*: *\\S[^\\r\\n]*$" }
+        }
+      }
+    },
+    "agents": {
+      "type": "object", "additionalProperties": false,
+      "description": "Per-role agent settings. The harness is the deployment's; a repo can change the model and narrow the MCP servers.",
+      "properties": {
+        "implement": {
+          "type": "object", "additionalProperties": false,
+          "properties": {
+            "model": { "type": "string", "description": "Model for the implementer on this repo, in the deployment's harness's naming." },
+            "mcp_servers": { "type": "array", "items": { "type": "string" }, "uniqueItems": true, "description": "A subset of the deployment's MCP servers for the implementer, by name, or [] for none. Naming any other is an error." }
+          }
+        },
+        "review": {
+          "type": "object", "additionalProperties": false,
+          "properties": {
+            "model": { "type": "string", "description": "Model for the reviewer on this repo, in the deployment's harness's naming." },
+            "mcp_servers": { "type": "array", "items": { "type": "string" }, "uniqueItems": true, "description": "A subset of the deployment's MCP servers for the reviewer, by name, or [] for none. Naming any other is an error." }
+          }
+        }
+      }
+    },
+    "integration": {
+      "type": "object", "additionalProperties": false, "required": ["command"],
+      "description": "On a parent task's repo: the integration check of its children, run from a workspace that holds each child's repo at its PR head under <provider>/<owner>/<name>/, once every child with an open PR is approved with green checks, and again when one of those heads moves. A child merges only once the check passed on every child's current head; a failure puts the parent at needs-human.",
+      "properties": {
+        "command": { "type": "string", "minLength": 1, "pattern": "\\S", "description": "Shell command run from the workspace root; its exit status is the result." },
+        "timeout": { "$ref": "#/$defs/duration", "default": "30m", "description": "How long the command may run, capped by the deployment's implement timeout." },
+        "repos": {
+          "type": "array", "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[A-Za-z0-9_][A-Za-z0-9._-]*:[A-Za-z0-9_][A-Za-z0-9._-]*/[A-Za-z0-9_][A-Za-z0-9._-]*$" },
+          "description": "Repos no child changes that the command needs, as provider:owner/name, each checked out at its default branch."
+        },
+        "retries": { "type": "integer", "minimum": 0, "maximum": 10, "default": 2, "description": "How many times a run that couldn't finish is tried again for the same heads. A failing command isn't retried." }
+      }
+    },
+    "timeouts": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "implement": { "$ref": "#/$defs/duration", "default": "60m" },
+        "review": { "$ref": "#/$defs/duration", "default": "20m" }
+      }
+    },
+    "services": {
+      "type": "array",
+      "description": "Service containers every implement and review run gets its own of, like a CI job's: started for the run in a pod of their own, ready before the model starts, reachable from the agent's commands and the checks on 127.0.0.1 at their ports, and deleted with the run. The install allows the images (repos.limits.services.images) and caps their number and size; a list outside its limits stops the task with the reason.",
+      "items": {
+        "type": "object", "additionalProperties": false, "required": ["name", "image"],
+        "properties": {
+          "name": { "type": "string", "pattern": "^[a-z]([-a-z0-9]{0,30}[a-z0-9])?$", "description": "The service's name, unique in the list: a DNS label of at most 32." },
+          "image": { "type": "string", "minLength": 1, "pattern": "^\\S+$", "description": "The image to run. A short name is Docker Hub's (postgres:17 is docker.io/library/postgres:17), and it must start with one of the deployment's repos.limits.services.images, unless the deployment allows any image." },
+          "env": {
+            "type": "object", "propertyNames": { "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" },
+            "additionalProperties": { "type": ["string", "number", "boolean"] },
+            "description": "The service container's environment."
+          },
+          "command": { "type": "array", "items": { "type": "string" }, "description": "Replaces the image's entrypoint." },
+          "args": { "type": "array", "items": { "type": "string" }, "description": "Replaces the image's command (the entrypoint's arguments)." },
+          "ports": {
+            "type": "array", "uniqueItems": true,
+            "items": { "type": "integer", "minimum": 1024, "maximum": 65535, "not": { "const": 8462 } },
+            "description": "TCP ports the service listens on. The run reaches each on 127.0.0.1 at the same port, and so do the run's other services. No two services may share one, and 8462 is the model proxy's."
+          },
+          "ready": {
+            "type": "object", "additionalProperties": false,
+            "description": "How the service shows it is ready: a TCP port that accepts connections, or a command in its container that exits 0, either checked every 2 s. Neither: ready once it runs.",
+            "properties": {
+              "tcp": { "type": "integer", "minimum": 1, "maximum": 65535 },
+              "exec": { "type": "array", "items": { "type": "string" }, "minItems": 1, "prefixItems": [{ "type": "string", "minLength": 1 }] }
+            },
+            "not": { "required": ["tcp", "exec"] }
+          },
+          "resources": {
+            "type": "object", "additionalProperties": false,
+            "description": "The container's CPU and memory limits, as Kubernetes quantities, up to the deployment's repos.limits.services ceilings. Unset: the deployment's default (services.resources).",
+            "properties": {
+              "cpu": { "type": ["string", "number"], "description": "e.g. 500m or 2" },
+              "memory": { "type": ["string", "number"], "description": "e.g. 512Mi or 4Gi" }
+            }
+          }
+        }
+      }
+    },
+    "env": {
+      "type": "object",
+      "description": "Environment devbot exports to the agent's commands and the checks, in both roles: where the tests find the services, say. Not for secrets: the model reads it. Names devbot sets itself (DEVBOT_*, ANTHROPIC_*, CLAUDE_*, CODEX_*, OPENAI_*, AWS_*, OTEL_*, PATH, HOME and the proxy variables) are refused, and so are names that have a loader, shell or interpreter run code from where they point (LD_*, DYLD_*, GIT_*, XDG_*, NPM_CONFIG_*, npm_config_*, NODE_OPTIONS, NODE_PATH, BASH_ENV, ENV, PYTHONPATH, PYTHONSTARTUP, PERL5OPT, RUBYOPT, JAVA_TOOL_OPTIONS and their like; see devbot-yaml.md).",
+      "propertyNames": { "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" },
+      "additionalProperties": { "type": ["string", "number", "boolean"] }
+    },
+    "branch_cleanup": { "type": "boolean", "default": true, "description": "Delete devbot/* branches once their PR is merged or closed, and branches of attempts that never opened a PR. false deletes none." },
+    "branch_cleanup_grace": { "$ref": "#/$defs/duration", "default": "1h", "description": "How long after its PR closed reconcile leaves a branch the task didn't delete itself." },
+    "orphan_branch_grace": { "$ref": "#/$defs/duration", "default": "24h", "description": "How long after its last commit reconcile leaves a devbot/* branch with no PR and no task running." }
+  }
+}

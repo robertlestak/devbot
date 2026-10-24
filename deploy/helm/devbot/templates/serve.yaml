@@ -1,0 +1,116 @@
+{{- $selector := dict "app.kubernetes.io/name" "devbot" "app.kubernetes.io/instance" .Release.Name "app.kubernetes.io/component" "serve" }}
+{{- $ha := gt (int .Values.serve.replicas) 1 }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}
+  labels: {{- include "devbot.labels" . | nindent 4 }}
+    app.kubernetes.io/component: serve
+spec:
+  replicas: {{ .Values.serve.replicas }}
+  # Replicas may overlap: one leads the singleton loops at a time (a lease
+  # in Redis), so a rollout brings the new pod up before the old goes.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxSurge: 1, maxUnavailable: 0 }
+  selector:
+    matchLabels: {{- toYaml $selector | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "devbot.labels" . | nindent 8 }}
+        app.kubernetes.io/component: serve
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ include "devbot.metricsPort" . | quote }}
+        prometheus.io/path: /metrics
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+    spec:
+      serviceAccountName: {{ .Release.Name }}-serve
+      # Only to label job pods (pod_labels) and run their service pods
+      # (services): serve's Role allows nothing else. The leader lease is in
+      # Redis, so it needs no Kubernetes API.
+      automountServiceAccountToken: {{ or (eq (include "devbot.podLabels" .) "true") (eq (include "devbot.services" .) "true") }}
+      securityContext: { runAsNonRoot: true, runAsUser: 65532, runAsGroup: 65532 }
+      {{- with include "devbot.imagePullSecrets" . | trim }}{{ . | nindent 6 }}{{ end }}
+      {{- if .Values.serve.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml .Values.serve.topologySpreadConstraints | nindent 8 }}
+      {{- else if $ha }}
+      # Spread so one node or zone going down leaves a replica serving.
+      topologySpreadConstraints:
+        {{- range list "kubernetes.io/hostname" "topology.kubernetes.io/zone" }}
+        - maxSkew: 1
+          topologyKey: {{ . }}
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector: { matchLabels: {{ toJson $selector }} }
+        {{- end }}
+      {{- end }}
+      # On a rollout or drain: preStop keeps serving while the endpoints drop
+      # this pod, then on SIGTERM serve finishes its requests (10s) and the
+      # webhooks it accepted (20s) before it exits, well inside the grace.
+      terminationGracePeriodSeconds: 45
+      {{- with .Values.serve.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: serve
+          image: {{ include "devbot.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: [serve]
+          env:
+            - { name: DEVBOT_CONFIG, value: /etc/devbot/config.yaml }
+            {{- include "devbot.redisEnv" (dict "root" . "user" "serve") | nindent 12 }}
+          envFrom:
+            - secretRef: { name: {{ .Values.secrets.forge }} }
+            {{- with .Values.secrets.auth }}
+            - secretRef: { name: {{ . }} }
+            {{- end }}
+          # metrics is its own listener (config.metrics_addr), kept off the
+          # Service: the metrics name repos, and the Service may be public.
+          ports: [{ name: http, containerPort: {{ include "devbot.listenPort" . }} }, { name: metrics, containerPort: {{ include "devbot.metricsPort" . }} }]
+          # Ready only while it reaches Redis; live as long as it answers,
+          # since restarting serve doesn't bring Redis back.
+          readinessProbe: { httpGet: { path: /readyz, port: http }, periodSeconds: 10 }
+          livenessProbe: { httpGet: { path: /healthz, port: http }, periodSeconds: 30, failureThreshold: 5 }
+          lifecycle:
+            preStop: { exec: { command: [sleep, "5"] } }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          resources: {{- toYaml .Values.serve.resources | nindent 12 }}
+          volumeMounts:
+            - { name: config, mountPath: /etc/devbot }
+            # The merge gate fetches each approved PR here to read what it changes.
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: config
+          configMap: { name: {{ .Release.Name }}-config }
+        - { name: tmp, emptyDir: {} }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}
+  labels: {{- include "devbot.labels" . | nindent 4 }}
+spec:
+  {{- with .Values.serve.clusterIP }}
+  clusterIP: {{ . }}
+  {{- end }}
+  selector: {{- toYaml $selector | nindent 4 }}
+  ports: [{ name: http, port: 80, targetPort: http }]
+{{- if $ha }}
+---
+# Voluntary disruptions (node drains, upgrades) keep this many serving.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ .Release.Name }}
+  labels: {{- include "devbot.labels" . | nindent 4 }}
+    app.kubernetes.io/component: serve
+spec:
+  minAvailable: {{ .Values.serve.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels: {{- toYaml $selector | nindent 6 }}
+{{- end }}

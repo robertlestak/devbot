@@ -1,0 +1,72 @@
+# An install against a Gitea (or Forgejo) instance. Layer over values.yaml:
+#   helm upgrade --install devbot oci://registry-1.docker.io/<your-dockerhub-user>/devbot-chart \
+#     --version X.Y.Z -n devbot -f my-values.yaml --wait=legacy
+# Every key: docs/operating.md.
+
+# harness: claude needs a Claude Code image, which devbot doesn't publish:
+# build one and set image.agents.claude.repository in your own values
+# (docs/operating.md#agent-images).
+
+config:
+  providers:
+    - name: gitea                       # repo refs look like gitea:owner/name
+      type: gitea
+      url: https://gitea.example.com
+      implementer_user: devbot
+      reviewer_user: devbot-review
+      implementer_token_env: DEVBOT_TOKEN
+      reviewer_token_env: DEVBOT_REVIEW_TOKEN
+      webhook_secret_env: GITEA_WEBHOOK_SECRET
+  authorization:
+    min_permission: write    # the implementer bot needs admin on the repos (or their org team) to read this
+  agents:
+    implement: { harness: claude, model: claude-opus-5-5 }
+    review: { harness: claude, model: claude-opus-5-5 }
+  repos:
+    opt_in: any                         # any repo both bots can write to
+  # Connector callers sign in through Gitea and act as themselves
+  # (docs/connectors.md). The OAuth app's redirect URI is
+  # https://devbot.example.com/oauth/callback.
+  auth:
+    mode: oauth
+    resource_url: https://devbot.example.com
+    client_id_env: DEVBOT_OAUTH_CLIENT_ID
+    client_secret_env: DEVBOT_OAUTH_CLIENT_SECRET
+    key_env: DEVBOT_AUTH_KEY
+
+# Gitea delivers webhooks to a non-public address only when its IP is listed in
+# webhook.ALLOWED_HOST_LIST; pin the IP so that entry stays right.
+serve:
+  clusterIP: 10.96.120.10                # an IP in your Service CIDR
+
+secrets:
+  forge: devbot-forge                   # DEVBOT_TOKEN, DEVBOT_REVIEW_TOKEN, GITEA_WEBHOOK_SECRET
+  agents:
+    claude: devbot-claude               # CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY
+  auth: devbot-auth                     # DEVBOT_OAUTH_CLIENT_ID, DEVBOT_OAUTH_CLIENT_SECRET, DEVBOT_AUTH_KEY (serve only)
+
+harnessEnv:
+  DEVBOT_COMMIT_EMAIL_GITEA: devbot@example.com
+
+# Claude Code telemetry, if you collect it.
+agentEnv:
+  CLAUDE_CODE_ENABLE_TELEMETRY: "1"
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector.observability:4317
+  OTEL_EXPORTER_OTLP_PROTOCOL: grpc
+  OTEL_METRICS_EXPORTER: otlp
+
+# Job pods reach only DNS, Redis, Anthropic's API and these
+# (docs/operating.md#egress): the collector, directly, and an egress proxy
+# that allows gitea.example.com and the registries the repos install from.
+networkPolicy:
+  allow:
+    - { namespace: observability, ports: [4317] }
+  egressProxy: { url: "http://egress-proxy.egress:3128", namespace: egress, port: 3128, noProxy: [.observability] }
+
+virtualService:
+  enabled: true
+  host: devbot.example.com
+  prefix: /
+  # The sidecar and the gateway pods, so the per-address limits are per
+  # client (docs/operating.md#behind-a-proxy). Use your own pod CIDR.
+  # trustedProxies: [127.0.0.0/8, ::1/128, 10.42.0.0/16]

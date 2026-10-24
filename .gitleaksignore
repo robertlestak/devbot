@@ -1,0 +1,8 @@
+# Deliberate fixtures: the audit log's redaction tests need a token and a JWT
+# shaped like real ones (a fake ghs_ token and jwt.io's sample). Their lines
+# carry gitleaks:allow, which holds wherever the tree is scanned from; these
+# entries cover the commits before that, and a scan run from the repo root.
+internal/audit/audit_test.go:github-app-token:70
+internal/audit/audit_test.go:jwt:76
+ac56bbafcc51013eea5e819e1d9b5b0040a9e2de:internal/audit/audit_test.go:github-app-token:70
+ac56bbafcc51013eea5e819e1d9b5b0040a9e2de:internal/audit/audit_test.go:jwt:76

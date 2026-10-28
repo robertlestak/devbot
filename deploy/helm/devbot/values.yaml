@@ -1,0 +1,414 @@
+# Install-neutral defaults. An install layers its own values over these; see
+# values.example-gitea.yaml and values.example-github.yaml, and
+# docs/operating.md for every key.
+
+# Extra labels on every object the chart creates.
+commonLabels: {}
+
+# Secrets, created out of band, the kubelet pulls images from private
+# registries with, e.g. the claude image you build: [{name: regcred}] or
+# [regcred]. Set on every pod the chart runs (serve, Redis, the job pods,
+# the TUN device plugin) and rendered into config.services, so service pods
+# get them too, and are the only ones serve may give them. Only the pod spec
+# names them: no container mounts one.
+imagePullSecrets: []
+
+image:
+  # The base image (docker/Dockerfile's base target): serve, the harness and
+  # the model proxy. It has no agent CLI.
+  repository: devbot
+  # Empty: the chart's appVersion: the commit (<sha8>) its image was built
+  # from for a main build, X.Y.Z for a release (docs/operating.md#versions).
+  tag: ""
+  # Neither kind of tag ever moves.
+  pullPolicy: IfNotPresent
+  # The agent sidecar's image, by the harness its role runs (config.agents):
+  # the base image with that harness's CLI (docs/operating.md#agent-images).
+  # tag defaults to image.tag. devbot publishes no claude image, as Claude
+  # Code is under Anthropic's terms: a role on claude needs claude.repository
+  # set to the one you build, or the chart doesn't render.
+  agents:
+    codex:
+      repository: devbot-codex
+      tag: ""
+    claude:
+      repository: ""
+      tag: ""
+
+# Rendered verbatim into config.yaml (internal/config). Secrets are never
+# here - only the names of the environment variables that carry them.
+config:
+  providers: []
+  # The bundled Redis, <release>-redis:6379, unless addr is set. For your
+  # own, its address (or Sentinel), TLS, and the names of the variables in
+  # secrets.redis holding its other secrets. The chart sets username_env and
+  # password_env.
+  redis: {}
+  authorization:
+    min_permission: write
+  # Per role: the agent harness (claude or codex) and its model, and
+  # optionally aws: {region, auth} to run it on Amazon Bedrock. Each harness
+  # needs its Secret in secrets.agents, unless aws.auth is irsa or
+  # pod_identity, and its image in image.agents.
+  agents: {}
+  # The MCP servers agents may use, by name (docs/operating.md#mcp-servers):
+  # {context7: {type: http, url: "https://mcp.example.com/context7/mcp"}}. A
+  # role gets the ones its config.agents.<role>.mcp_servers lists, and none
+  # by default.
+  # mcp_servers: {}
+  reconcile_interval: 2m
+  # /metrics listens here, apart from the connectors: its labels name
+  # repos. The pod exposes it as port "metrics", not on the Service.
+  metrics_addr: ":9090"
+  workdir: /work
+  # Which repos devbot works in (docs/operating.md). "any": every repo both
+  # bots can write to, with repos.defaults for those without a .devbot.yaml.
+  repos:
+    opt_in: any
+    # Whether a person can hand devbot a PR it didn't open with devbot/ready
+    # (docs/forge.md#handing-devbot-an-existing-pr), and one from a fork
+    # (forks, docs/forge.md#prs-from-forks, only where enabled is on too):
+    # the default for repos without a .devbot.yaml, and an install-wide off
+    # switch no repo can override.
+    # defaults: {pull_requests: {enabled: true, forks: true}}
+    # limits: {pull_requests: {enabled: true, forks: true}}
+    # How the commits devbot pushes credit the agent, and trailers for them
+    # (docs/devbot-yaml.md#commit-attribution): the base every repo's
+    # .devbot.yaml overrides key by key. Unset leaves the agent CLI's own.
+    # defaults: {commits: {co_authored_by: false, trailers: ["Signed-off-by: devbot <devbot@example.com>"]}}
+  # Connector auth (docs/connectors.md). "none": every caller is
+  # anonymous_principal, with no forge permissions applied, so only on a
+  # trusted network (empty turns the connectors and web UI off). "oauth": callers sign
+  # in through the forge and act as themselves.
+  auth:
+    mode: none
+  # anonymous_principal: anonymous
+  # In auth.mode none, serve answers /api, /mcp and /ui only at these host
+  # names, auth.resource_url's and allowed_origins', IP addresses and
+  # localhost (docs/operating.md#dns-rebinding). The chart adds the
+  # Service's in-cluster names, virtualService.host and ingress.host.
+  # allowed_hosts: []
+  # subscribers: []
+
+# Existing Secrets the chart reads (created out of band, never templated).
+secrets:
+  # Forge credentials: one key per *_token_env (Gitea) or *_key_env
+  # (GitHub) and webhook_secret_env named in config.providers. serve gets
+  # them all; a job pod's harness only its own bot's key (implement pods
+  # the implementer's, review pods the reviewer's), and never the webhook
+  # secret.
+  forge: devbot-forge
+  # Each agent harness's model credential, by harness. A job pod's model
+  # proxy gets only the one for the harness its role runs (config.agents),
+  # and nothing else does: not the agent sidecar the model runs in.
+  # claude: CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY. codex:
+  # CODEX_API_KEY. On Bedrock with aws.auth access_keys, either:
+  # AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY (and AWS_SESSION_TOKEN).
+  agents:
+    claude: devbot-claude
+  # Optional, for auth.mode oauth: serve only. The forge OAuth app's client
+  # ID and secret and the key that encrypts people's forge tokens, one key
+  # per auth.*_env.
+  auth: ""
+  # Optional, for a Redis whose Sentinel wants a password or whose TLS wants
+  # a CA of its own: one key per config.redis.sentinel.password_env and
+  # tls.ca_env. Given to serve and the harness, never the agent, and to KEDA.
+  # The users' passwords are in redis.existingSecret.
+  redis: ""
+
+# Extra env for the harness, e.g. commit emails per provider.
+harnessEnv: {}
+# Extra env for the agent sidecar, passed on to the model's commands and the
+# checks: OTEL settings, say, or a registry mirror's (GOPROXY,
+# PIP_INDEX_URL, npm_config_registry). Never a secret: the model reads it.
+agentEnv: {}
+
+# serve labels each running job pod with its job's repo, task, role and
+# requester (devbot.io/*) and the repo's labels (labels.devbot.io/*), for cost
+# tools that allocate by pod label. Gives serve a Role to get and patch pods in
+# the namespace, held by a ValidatingAdmissionPolicy to those labels on this
+# release's job pods. Rendered into config.pod_labels unless config sets it.
+podLabels:
+  enabled: true
+  # Label pods on a cluster without ValidatingAdmissionPolicy, where nothing
+  # stops serve patching any pod in the namespace, image included. Without
+  # it the chart refuses to install there.
+  allowUnrestrictedPatch: false
+
+# Service containers a repo's runs get (.devbot.yaml services): serve starts
+# one pod per implement or review run, owned by the run's Job, with the
+# run's services in it, and deletes it when the run ends
+# (docs/operating.md#service-containers). Gives serve a Role to create, list
+# and delete pods (and NetworkPolicies) in the namespace, held by a
+# ValidatingAdmissionPolicy to service pods of this release's shape. Off: a
+# repo that asks for services is stopped with a message saying so. Which
+# images a repo may run, and how big, is config.repos.limits.services
+# (none until you list them; ["*"] alone allows any). Rendered into
+# config.services unless config sets it.
+services:
+  enabled: false
+  # How long a run's services have to be pulled, started and ready.
+  readyTimeout: 5m
+  # A service's container when it doesn't set its own resources (which
+  # become its limits). ephemeral_storage is every service's disk limit, so
+  # none can fill its node's; a repo can't set it.
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { cpu: "1", memory: 1Gi, ephemeral_storage: 2Gi }
+  # Service pods run where job pods do (jobs.nodeSelector, tolerations,
+  # runtimeClassName, userNamespaces) and with their deadlines
+  # (jobs.<role>.activeDeadlineSeconds). Raw NetworkPolicyEgressRules for
+  # them, beyond DNS, the only egress they get otherwise:
+  extraEgress: []
+
+# The read-only web UI on serve, at <serve>/ui/ (docs/operating.md#web-ui).
+# Rendered into config.ui unless config sets it. In auth.mode none it reads
+# as config.anonymous_principal, like the connectors, and shows nothing
+# without one; it sees every repo the bots do, so set one only where
+# everyone who can reach serve may.
+ui:
+  enabled: false
+  # Linked from every page when set: the install's Grafana dashboard.
+  grafanaUrl: ""
+
+serve:
+  # Every replica serves webhooks, the connectors, OAuth and the UI; one at
+  # a time, the leader, also runs the reconcile loop, delayed-job release
+  # and outbound delivery (docs/operating.md#high-availability). 2 or more
+  # for HA.
+  replicas: 1
+  # Pin the Service's ClusterIP when a forge needs the webhook target's IP
+  # allow-listed (Gitea does, for non-public addresses).
+  clusterIP: ""
+  # With 2 or more replicas: a PodDisruptionBudget keeping this many up.
+  podDisruptionBudget:
+    minAvailable: 1
+  # Empty: with 2 or more replicas, spread them across nodes and zones,
+  # where the cluster can. A list replaces that, labelSelector included.
+  topologySpreadConstraints: []
+  # The pod's affinity, as it is: e.g. required anti-affinity by node.
+  affinity: {}
+  resources:
+    requests: { cpu: 20m, memory: 64Mi }
+    limits: { memory: 256Mi }
+
+redis:
+  # The bundled Redis: one pod, the simple default. false to use your own,
+  # managed or HA, configured in config.redis (docs/operating.md#redis-for-ha).
+  enabled: true
+  image: redis:7.4.6-alpine
+  # Redis requires a password of each of its users: devbot-serve (all of
+  # it), devbot-harness (a job's keys, never sign-ins) and devbot-keda
+  # (queue lengths). Empty: the chart generates them into <release>-redis
+  # and keeps them across upgrades. Or name a Secret of your own with the
+  # keys serve-password, harness-password and keda-password; with
+  # enabled: false, you must.
+  existingSecret: ""
+  # Redis refuses writes past this rather than evicting: auth and the queue
+  # share it, and evicting would sign people out and drop jobs. Keep it
+  # below resources.limits.memory, with room for Redis's own overhead.
+  maxmemory: 192mb
+  # Keep the bundled Redis's data on a volume, in an append-only file
+  # flushed to disk every second, so connector sign-ins survive a Redis
+  # restart: a restart keeps everything, a node lost outright at most the
+  # last second's writes (docs/operating.md#redis-persistence). Without it,
+  # a restart signs everyone out: the next reconcile pass restores the rest.
+  persistence:
+    enabled: false
+    size: 1Gi
+    # Empty: the cluster's default StorageClass.
+    storageClass: ""
+  resources:
+    requests: { cpu: 10m, memory: 32Mi }
+    limits: { memory: 256Mi }
+  # Where the Redis pod runs, as the pod spec has them (like
+  # jobs.nodeSelector, jobs.tolerations and jobs.affinity).
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+jobs:
+  pollingInterval: 10
+  # Effectively unbounded: cluster capacity is the real limit. KEDA
+  # requires a number.
+  maxReplicaCount: 1000
+  # Where job pods run, e.g. nodes kept for them alone (docs/operating.md#security).
+  # The image is multi-arch, so any node will do.
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  # Spread job pods across nodes. Kubernetes only spreads pods of Services
+  # and ReplicaSets by default, not Jobs, so without this a burst lands on
+  # whichever node looks emptiest. An entry without a labelSelector gets one
+  # matching both roles' job pods of this release. [] turns it off.
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: kubernetes.io/hostname
+      whenUnsatisfiable: ScheduleAnyway
+  # A sandboxed runtime for job pods, e.g. gvisor or kata: the RuntimeClass
+  # name. Empty: the cluster's default runtime.
+  runtimeClassName: ""
+  # Run job pods in a user namespace (hostUsers: false), so root in the
+  # agent container is unprivileged on the node. Needs node support
+  # (Kubernetes 1.33+, or the UserNamespacesSupport gate; containerd 2.0 or
+  # CRI-O 1.25; idmapped mounts on the filesystem under the kubelet's
+  # directory, as ext4 and XFS have from Linux 5.12, and Linux 6.3 for a
+  # tmpfs volume such as IRSA's token); tested on Linux 6.1. Turn it off
+  # where there is none.
+  userNamespaces: true
+  # Each role's job pods run as their own ServiceAccount, <release>-<role>.
+  # For config.agents.<role>.aws.auth irsa, annotate it with the role:
+  # {eks.amazonaws.com/role-arn: arn:aws:iam::<account>:role/<role>}. For
+  # pod_identity, associate the ServiceAccount with the role in EKS.
+  implement:
+    activeDeadlineSeconds: 4200
+    serviceAccount:
+      annotations: {}
+  review:
+    activeDeadlineSeconds: 1800
+    serviceAccount:
+      annotations: {}
+  agentResources:
+    requests: { cpu: "2", memory: 1Gi }
+    limits: { cpu: "4", memory: 8Gi }
+  harnessResources:
+    requests: { cpu: 20m, memory: 64Mi }
+    limits: { memory: 512Mi }
+  modelProxyResources:
+    requests: { cpu: 10m, memory: 32Mi }
+    limits: { memory: 256Mi }
+
+# A Docker daemon for the implement and review runs of repos that ask for one
+# (.devbot.yaml docker: true) or, leaving docker unset, show they need one,
+# each run its own, at DOCKER_HOST, for tests that start containers
+# (docs/operating.md#docker). Rendered into config.docker. Those repos' jobs
+# run from ScaledJobs of their own, <release>-<role>-docker, so no other run
+# pays for the sidecar.
+docker:
+  # "": none. dind: a rootless Docker daemon in a sidecar of the job pod,
+  # which needs that sidecar's seccomp and AppArmor confinement turned off
+  # and a TUN device plugin on the job nodes, which the chart runs (see dind
+  # below, docs/operating.md#dind).
+  mode: ""
+  # With a mode, a repo that leaves docker unset gets the daemon when its
+  # task's base branch has a testcontainers dependency or a Compose file
+  # (docs/devbot-yaml.md#docker). false: only docker: true counts.
+  detect: true
+  dind:
+    image: docker:29.9.1-dind-rootless
+    # Must be true for dind to render: the daemon's container runs with
+    # allowPrivilegeEscalation, an unmasked /proc, the seccomp and AppArmor
+    # profiles below (Unconfined unless you install Localhost ones). Pod
+    # Security's baseline level refuses such a pod.
+    acceptLooserSandbox: false
+    # The daemon and every container it runs share these: the CPU, memory
+    # and ephemeral storage (images, layers, volumes) of one run's Docker.
+    resources:
+      requests: { cpu: 500m, memory: 512Mi, ephemeral-storage: 1Gi }
+      limits: { cpu: "4", memory: 8Gi, ephemeral-storage: 20Gi }
+    # The daemon's own sandbox. Rootless Docker creates a user namespace
+    # and mounts, which RuntimeDefault seccomp and the runtime's AppArmor
+    # profile refuse, so both are off unless a node has a Localhost profile
+    # allowing them: {type: Localhost, localhostProfile: <file>}.
+    seccompProfile: { type: Unconfined }
+    appArmorProfile: { type: Unconfined }
+    # slirp4netns, the daemon's network, needs /dev/net/tun, and a pod with
+    # hostUsers: false can't mount the node's by hostPath, so a device plugin
+    # gives it out as an extended resource, one to each daemon. tunPlugin
+    # runs one, a DaemonSet on the job nodes: root on the node, for the
+    # kubelet's socket, but with no privilege or capabilities.
+    tunPlugin:
+      enabled: true
+      image: squat/generic-device-plugin:0.2.0@sha256:66c8d5c270eb2b721f1064c549b9b7898152a6d2f0163380a5d37dc7636c20ff
+      # Daemons per node: the kubelet's default pod limit, so it is never
+      # what stops a job pod.
+      count: 110
+      # The kubelet's device-plugin directory on the nodes.
+      pluginDirectory: /var/lib/kubelet/device-plugins
+      resources:
+        requests: { cpu: 10m, memory: 16Mi }
+        limits: { cpu: 50m, memory: 32Mi }
+    # The resource's name: what tunPlugin gives out (empty: devbot.io/tun),
+    # or, with tunPlugin off, what a device plugin of your own does (e.g.
+    # squat.ai/tun). dind needs one or the other.
+    tunResource: ""
+
+# Egress policy for job pods (docs/operating.md#egress). They reach DNS,
+# Redis, the model API their role's model proxy calls, and what is allowed
+# below, and nothing else.
+networkPolicy:
+  enabled: true
+  # The model APIs' addresses (port 443) by where a role's model runs: its
+  # harness's vendor, or bedrock. claude is Anthropic's published API range.
+  # OpenAI and AWS publish none that small: list the addresses you trust
+  # (for Bedrock, the VPC endpoints of bedrock-runtime, bedrock or
+  # bedrock-mantle, and sts for irsa), or send the model proxy through
+  # egressProxy.
+  modelAPI:
+    claude: [160.79.104.0/23, "2607:6bc0::/48"]
+    codex: []
+    bedrock: []
+  # An HTTP(S) proxy for everything else: url is set as HTTPS_PROXY and
+  # HTTP_PROXY in every job container, and cidr or namespace with port is
+  # where the policy lets them reach it. Point it at a proxy that allows the
+  # forge, the model API and the registries repos install from, or a
+  # registry mirror. noProxy: more NO_PROXY entries.
+  egressProxy:
+    url: ""
+    cidr: ""
+    namespace: ""
+    port: 3128
+    noProxy: []
+  # Any public address, as self-provisioning from arbitrary registries
+  # needs, except privateCIDRs. Whatever the model is talked into can then
+  # send what it sees anywhere (not a credential: none is in its container).
+  internet: false
+  privateCIDRs: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16, "fc00::/7", "fe80::/10"]
+  # More destinations: [{cidr: x/32, ports: [4317]}] or [{namespace: gitea}]
+  # (any port). Remember the forge and any OTEL collector. A cidr may be
+  # private: listing it is what allows it. An MCP server a role is given
+  # (config.agents.<role>.mcp_servers) is allowed by itself when its URL is
+  # an address; one named by hostname needs its address here.
+  allow: []
+  # Raw NetworkPolicyEgressRules, appended as they are.
+  extraEgress: []
+  # The bundled Redis takes connections only from this release's serve and
+  # job pods, and from KEDA's operator, which reads the queue lengths: the
+  # namespace KEDA runs in and its operator pods' labels.
+  keda:
+    namespace: keda
+    podLabels: { app.kubernetes.io/name: keda-operator }
+
+# Expose serve (MCP + API) through an Istio VirtualService.
+virtualService:
+  enabled: false
+  host: ""
+  # OAuth needs serve at the root of its host: clients look for its
+  # metadata at the host's /.well-known/. A sub-path works without OAuth.
+  prefix: /
+  gateway: istio-system/ingressgateway
+  # The proxies between the client and serve whose X-Forwarded-For serve
+  # believes, for its per-address limits (OAuth rate limits, device-code
+  # entry). Rendered into config.trusted_proxies while enabled, in
+  # auth.mode oauth, unless config sets it. Empty trusts no one, so every
+  # request through the gateway shares the sidecar's address and one limit.
+  # List only real hops: with a sidecar, 127.0.0.0/8 and the gateway pods'
+  # CIDR. See docs/operating.md.
+  trustedProxies: []
+
+# Expose serve (webhooks, MCP, OAuth, the UI) through a standard Ingress, at
+# the root of host: a forge on the internet (GitHub.com) delivers webhooks
+# there, and OAuth wants a host of its own. Behind it, list the controller's
+# addresses in config.trusted_proxies for per-client limits
+# (docs/operating.md#behind-a-proxy).
+ingress:
+  enabled: false
+  # The IngressClass. Empty: the cluster's default.
+  className: ""
+  host: ""
+  annotations: {}
+  # The Secret with host's certificate (e.g. cert-manager's, from an
+  # annotation above). Empty: no tls section, for a controller that
+  # terminates TLS with a certificate of its own.
+  tls:
+    secretName: ""

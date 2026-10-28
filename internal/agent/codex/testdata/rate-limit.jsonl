@@ -1,0 +1,4 @@
+{"type":"thread.started","thread_id":"0199a213-81c0-7800-8aa1-bbab2a035a53"}
+{"type":"turn.started"}
+{"type":"error","message":"Reconnecting... 5/5 (rate limit exceeded: Rate limit reached for gpt-6.1-sol in organization org-x on tokens per min (TPM): Limit 30000, Used 29000, Requested 2000. Please try again in 6m0s.)"}
+{"type":"turn.failed","error":{"message":"rate limit exceeded: Rate limit reached for gpt-6.1-sol in organization org-x on tokens per min (TPM): Limit 30000, Used 29000, Requested 2000. Please try again in 6m0s."}}

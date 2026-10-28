@@ -1,0 +1,47 @@
+name: image versions
+on:
+  schedule:
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+
+# Weekly: when Claude Code, Codex or mise has a newer release than
+# docker/Dockerfile pins, file a devbot task to bump them: an issue with
+# devbot/ready, which devbot's implementer and reviewer carry through the
+# proxy tests to a PR like any other task. One open bump issue at a time. A
+# fork without GT_TOKEN only reports what is behind.
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    env:
+      GT_TOKEN: ${{ secrets.GT_TOKEN }}
+      TITLE: Bump the pinned agent CLIs and mise
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with: { persist-credentials: false }
+      - name: check
+        id: check
+        run: |
+          hack/image-versions -w | tee "$RUNNER_TEMP/behind.txt"
+          if git diff --quiet; then echo "bump=false" >> "$GITHUB_OUTPUT"; else echo "bump=true" >> "$GITHUB_OUTPUT"; fi
+      - name: devbot task
+        if: steps.check.outputs.bump == 'true'
+        run: |
+          [ -n "$GT_TOKEN" ] || { echo "::notice::GT_TOKEN is not set; not filing a task"; exit 0; }
+          api=$GITHUB_SERVER_URL/api/v1/repos/$GITHUB_REPOSITORY
+          h=(-H "Authorization: token $GT_TOKEN" -H 'Content-Type: application/json')
+          # Editing a running task's issue would stop it, so a bump already
+          # open is left to finish; the next run files the rest.
+          open=$(curl -fsS "${h[@]}" "$api/issues?state=open&type=issues&limit=50" | jq --arg t "$TITLE" '[.[] | select(.title == $t)] | length')
+          [ "$open" = 0 ] || { echo "::notice::a bump task is already open"; exit 0; }
+          label=$(curl -fsS "${h[@]}" "$api/labels?limit=100" | jq '[.[] | select(.name == "devbot/ready") | .id] | first')
+          [ "$label" != null ] || { echo "::error::no devbot/ready label in $GITHUB_REPOSITORY"; exit 1; }
+          body=$(jq -rn --arg b "$(cat "$RUNNER_TEMP/behind.txt")" '
+            "Newer releases than `docker/Dockerfile` pins (name, pinned, latest):\n\n```\n" + $b + "\n```\n\n" +
+            "Bump them with `hack/image-versions -w`, which rewrites the versions and their published SHA-256s, and prove the new agent CLIs still work through the model proxy before the image ships them.\n\n" +
+            "## Acceptance criteria\n\n" +
+            "- `docker/Dockerfile` and `docker/claude.Dockerfile` pin the latest versions listed above (or newer), with the SHA-256s each project publishes, as written by `hack/image-versions -w`.\n" +
+            "- `TestPinnedCLIsThroughTheProxy` (docs/operating.md#model-proxy) runs, not skips, against the newly pinned Claude Code and Codex, and passes; the PR has its output, and the reviewer runs it too.\n" +
+            "- If a new CLI calls an API route the model proxy refuses, the allowlist gains that route with a test, rather than the test being skipped or loosened.\n" +
+            "- `CHANGELOG.md` has an entry under `## [Unreleased]` (Changed) naming the new versions.\n"')
+          jq -n --arg t "$TITLE" --arg b "$body" --argjson l "$label" '{title: $t, body: $b, labels: [$l]}' \
+            | curl -fsS -X POST "${h[@]}" "$api/issues" -d @- | jq -r '"filed " + .html_url'

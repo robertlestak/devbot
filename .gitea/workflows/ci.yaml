@@ -1,0 +1,174 @@
+name: test and publish
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      # go.mod's toolchain line picks the patch release.
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with: { go-version-file: go.mod, cache: true }
+      # Before the tests: the chart tests skip without helm, the Redis ones
+      # without redis-server, and the live chart tests without an etcd and
+      # kube-apiserver of their own (envtest's), so CI provides all of them.
+      - uses: azure/setup-helm@b9e51907a09c216f16ebe8536097933489208112 # v4.3.0
+      - name: test tools
+        run: |
+          # The Redis the chart bundles, so its ACLs are tested as shipped.
+          v=$(sed -n 's/^  image: redis:\([0-9.]*\).*/\1/p' deploy/helm/devbot/values.yaml)
+          curl -fsSL "https://download.redis.io/releases/redis-$v.tar.gz" | tar -xz -C "$RUNNER_TEMP"
+          make -s -C "$RUNNER_TEMP/redis-$v" -j"$(nproc)" redis-server >/dev/null
+          echo "$RUNNER_TEMP/redis-$v/src" >> "$GITHUB_PATH"
+          go install sigs.k8s.io/controller-runtime/tools/setup-envtest@release-0.22
+          go install github.com/yannh/kubeconform/cmd/kubeconform@v0.7.0
+          bin=$(go env GOPATH)/bin
+          echo "$bin" >> "$GITHUB_PATH"
+          "$bin/setup-envtest" use 1.34.1 --bin-dir "$RUNNER_TEMP/envtest" -p path >> "$GITHUB_PATH"
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+      - run: go vet ./...
+      - run: go test -count=1 $(go list ./... | grep -v '/deploy$')
+      # Every chart test runs here, so a skip means a tool went missing.
+      - name: chart tests, none skipped
+        run: |
+          go test -count=1 -v ./deploy/ > "$RUNNER_TEMP/deploy.log" 2>&1 || {
+            # The live tests log a whole kube-apiserver; show the failures.
+            grep -E -- '--- FAIL|_test\.go:[0-9]+:|^panic|^FAIL' "$RUNNER_TEMP/deploy.log"; exit 1; }
+          if grep -- '--- SKIP' "$RUNNER_TEMP/deploy.log"; then exit 1; fi
+      - name: helm lint
+        run: |
+          helm lint deploy/helm/devbot
+          for f in deploy/helm/devbot/values.example-*.yaml; do helm lint deploy/helm/devbot -f "$f"; done
+
+  # Every commit on main publishes its images and a chart that points at
+  # them. Where they go comes from Actions variables, so the repo names no
+  # install; a fork without them skips this and stays green. The claude
+  # image goes only to CLAUDE_IMAGE_REPO, a private registry: Claude Code is
+  # under Anthropic's terms, so it is never pushed beside the others.
+  #
+  # One job per image, so they build side by side, each on a builder of its
+  # own: <IMAGE_REPO>:<sha8>, <IMAGE_REPO>-codex:<sha8>, and
+  # <CLAUDE_IMAGE_REPO>:<sha8> when it is set.
+  images:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    strategy:
+      # A failed image leaves the chart unpublished either way; the others
+      # still finish rather than being cancelled mid-push.
+      fail-fast: false
+      matrix:
+        target: [base, codex, claude]
+    env:
+      IMAGE_REPO: ${{ vars.IMAGE_REPO }}
+      CLAUDE_IMAGE_REPO: ${{ vars.CLAUDE_IMAGE_REPO }}
+      CHART_REPO: ${{ vars.CHART_REPO }}
+      BUILDX_NAMESPACE: ${{ vars.BUILDX_NAMESPACE }}
+      KUBE_CONFIG: ${{ secrets.KUBE_CONFIG }}
+      REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
+      REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+      # The kubernetes driver names its Deployment after the builder, so each
+      # image's builder is its own.
+      BUILDER: devbot-${{ github.run_id }}-${{ matrix.target }}
+    steps:
+      - name: settings
+        id: cfg
+        run: |
+          if [ -z "$IMAGE_REPO" ] || [ -z "$CHART_REPO" ]; then
+            echo "::notice::IMAGE_REPO or CHART_REPO is not set; not publishing"
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          case ${{ matrix.target }} in
+          base) repo=$IMAGE_REPO ;;
+          codex) repo=$IMAGE_REPO-codex ;;
+          claude) repo=$CLAUDE_IMAGE_REPO ;;
+          esac
+          if [ -z "$repo" ]; then
+            echo "::notice::CLAUDE_IMAGE_REPO is not set; no claude image"
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          {
+            echo "publish=true"
+            echo "repo=$repo"
+            echo "sha8=${GITHUB_SHA::8}"
+          } >> "$GITHUB_OUTPUT"
+          if [ -n "$KUBE_CONFIG" ] && [ -n "$BUILDX_NAMESPACE" ]; then
+            echo "kube=true" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.cfg.outputs.publish == 'true'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      # Optional: the registries other installs use may need credentials.
+      - name: registry login
+        if: steps.cfg.outputs.publish == 'true'
+        run: |
+          [ -n "$REGISTRY_USERNAME" ] && [ -n "$REGISTRY_PASSWORD" ] || { echo "no registry credentials; pushing anonymously"; exit 0; }
+          repo=${{ steps.cfg.outputs.repo }}
+          echo "$REGISTRY_PASSWORD" | docker login "${repo%%/*}" -u "$REGISTRY_USERNAME" --password-stdin
+      - name: kubernetes builder
+        if: steps.cfg.outputs.publish == 'true' && steps.cfg.outputs.kube == 'true'
+        run: |
+          dir=$(mktemp -d)
+          echo "$KUBE_CONFIG" | base64 -d > "$dir/kubeconfig"
+          echo "KUBECONFIG=$dir/kubeconfig" >> "$GITHUB_ENV"
+          export KUBECONFIG=$dir/kubeconfig
+          docker buildx create --name "$BUILDER" --driver kubernetes \
+            --driver-opt "namespace=$BUILDX_NAMESPACE,nodeselector=kubernetes.io/arch=amd64" \
+            --bootstrap --use
+      - name: image
+        if: steps.cfg.outputs.publish == 'true'
+        run: |
+          sha8=${{ steps.cfg.outputs.sha8 }}
+          hack/image-build ${{ matrix.target }} "$sha8" "${{ steps.cfg.outputs.repo }}:$sha8"
+      - name: remove builder
+        if: always() && steps.cfg.outputs.publish == 'true' && steps.cfg.outputs.kube == 'true'
+        run: docker buildx rm "$BUILDER" || true
+
+  # After every image, so a published chart always has its images.
+  chart:
+    needs: images
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    env:
+      IMAGE_REPO: ${{ vars.IMAGE_REPO }}
+      CHART_REPO: ${{ vars.CHART_REPO }}
+      REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
+      REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+    steps:
+      - name: settings
+        id: cfg
+        run: |
+          if [ -z "$IMAGE_REPO" ] || [ -z "$CHART_REPO" ]; then
+            echo "::notice::IMAGE_REPO or CHART_REPO is not set; not publishing"
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "publish=true" >> "$GITHUB_OUTPUT"
+          echo "sha8=${GITHUB_SHA::8}" >> "$GITHUB_OUTPUT"
+      - if: steps.cfg.outputs.publish == 'true'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - if: steps.cfg.outputs.publish == 'true'
+        uses: azure/setup-helm@b9e51907a09c216f16ebe8536097933489208112 # v4.3.0
+      - name: registry login
+        if: steps.cfg.outputs.publish == 'true'
+        run: |
+          [ -n "$REGISTRY_USERNAME" ] && [ -n "$REGISTRY_PASSWORD" ] || { echo "no registry credentials; pushing anonymously"; exit 0; }
+          chart_host=${CHART_REPO#oci://}; chart_host=${chart_host%%/*}
+          echo "$REGISTRY_PASSWORD" | helm registry login "$chart_host" -u "$REGISTRY_USERNAME" --password-stdin
+      - name: chart
+        if: steps.cfg.outputs.publish == 'true'
+        run: |
+          sha8=${{ steps.cfg.outputs.sha8 }}
+          base=$(helm show chart deploy/helm/devbot | sed -n 's/^version: *//p')
+          dir=$(mktemp -d)
+          helm package deploy/helm/devbot -d "$dir" --version "$base-$sha8" --app-version "$sha8"
+          helm push "$dir/devbot-$base-$sha8.tgz" "$CHART_REPO"

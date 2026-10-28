@@ -1,0 +1,280 @@
+name: release
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # A vX.Y.Z tag publishes multi-arch images to Docker Hub as
+  # $DOCKER_HUB_USERNAME/devbot and $DOCKER_HUB_USERNAME/devbot-codex (vX.Y.Z,
+  # X.Y.Z, X.Y, X, latest), then a chart whose default images are those. Any
+  # other v* tag publishes the images under that tag alone. A fork without
+  # the secrets skips it.
+  #
+  # The claude image (Claude Code is under Anthropic's terms) goes to Docker
+  # Hub as $DOCKER_HUB_USERNAME/devbot-claude only with the variable
+  # PUBLISH_CLAUDE_IMAGE set to true, and then the chart defaults to it too.
+  # Otherwise it goes, with the same tags, to CLAUDE_IMAGE_REPO when that is
+  # set (a private registry, logged in to with REGISTRY_USERNAME and
+  # REGISTRY_PASSWORD), and nowhere when it isn't.
+  settings:
+    runs-on: ubuntu-latest
+    env:
+      DOCKER_HUB_USERNAME: ${{ secrets.DOCKER_HUB_USERNAME }}
+      DOCKER_HUB_PAT: ${{ secrets.DOCKER_HUB_PAT }}
+      PUBLISH_CLAUDE_IMAGE: ${{ vars.PUBLISH_CLAUDE_IMAGE }}
+      CLAUDE_IMAGE_REPO: ${{ vars.CLAUDE_IMAGE_REPO }}
+    outputs:
+      publish: ${{ steps.cfg.outputs.publish }}
+      version: ${{ steps.cfg.outputs.version }}
+      clean: ${{ steps.cfg.outputs.clean }}
+      image: ${{ steps.cfg.outputs.image }}
+      tags: ${{ steps.cfg.outputs.tags }}
+      claude: ${{ steps.cfg.outputs.claude }}
+      claude_public: ${{ steps.cfg.outputs.claude_public }}
+      chart: ${{ steps.cfg.outputs.chart }}
+    steps:
+      - name: settings
+        id: cfg
+        run: |
+          if [ -z "$DOCKER_HUB_USERNAME" ] || [ -z "$DOCKER_HUB_PAT" ]; then
+            echo "::notice::DOCKER_HUB_USERNAME or DOCKER_HUB_PAT is not set; not publishing"
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          version=${GITHUB_REF#refs/tags/}
+          clean=${version#v}
+          image="$DOCKER_HUB_USERNAME/devbot"
+          # Only a plain vX.Y.Z moves latest; a pre-release gets its own tag.
+          tags="$version"
+          if [[ $version =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            major=${BASH_REMATCH[1]} minor=${BASH_REMATCH[2]}
+            tags="$tags $clean $major.$minor $major latest"
+            # A chart version must be semver, so only these get a chart.
+            echo "chart=true" >> "$GITHUB_OUTPUT"
+          fi
+          claude=""
+          if [ "$PUBLISH_CLAUDE_IMAGE" = true ]; then
+            claude="docker.io/$image-claude"
+            echo "claude_public=true" >> "$GITHUB_OUTPUT"
+          elif [ -n "$CLAUDE_IMAGE_REPO" ]; then
+            claude=$CLAUDE_IMAGE_REPO
+          fi
+          {
+            echo "publish=true"
+            echo "version=$version"
+            echo "clean=$clean"
+            echo "image=$image"
+            echo "tags=$tags"
+            echo "claude=$claude"
+          } >> "$GITHUB_OUTPUT"
+      - if: steps.cfg.outputs.publish == 'true'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with: { fetch-depth: 0 }
+      # Only a commit that's on main, and so went through CI and review, is
+      # released.
+      - name: tag is on main
+        if: steps.cfg.outputs.publish == 'true'
+        run: |
+          git fetch -q origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main \
+            || { echo "::error::$GITHUB_REF_NAME ($GITHUB_SHA) isn't on main"; exit 1; }
+
+  # One job per image, so they build side by side, each on a builder of its
+  # own.
+  images:
+    needs: settings
+    if: needs.settings.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      # A failed image leaves the chart unpublished either way; the others
+      # still finish rather than being cancelled mid-push.
+      fail-fast: false
+      matrix:
+        target: [base, codex, claude]
+    env:
+      DOCKER_HUB_USERNAME: ${{ secrets.DOCKER_HUB_USERNAME }}
+      DOCKER_HUB_PAT: ${{ secrets.DOCKER_HUB_PAT }}
+      PUBLISH_CLAUDE_IMAGE: ${{ vars.PUBLISH_CLAUDE_IMAGE }}
+      CLAUDE_IMAGE_REPO: ${{ vars.CLAUDE_IMAGE_REPO }}
+      REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
+      REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+      KUBE_CONFIG: ${{ secrets.KUBE_CONFIG }}
+      BUILDX_NAMESPACE: ${{ vars.BUILDX_NAMESPACE }}
+    steps:
+      - name: settings
+        id: cfg
+        run: |
+          image=${{ needs.settings.outputs.image }}
+          case ${{ matrix.target }} in
+          base) repo=$image ;;
+          codex) repo=$image-codex ;;
+          claude) repo=${{ needs.settings.outputs.claude }} ;;
+          esac
+          if [ -z "$repo" ]; then
+            echo "::notice::neither PUBLISH_CLAUDE_IMAGE nor CLAUDE_IMAGE_REPO is set; no claude image"
+            echo "build=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # The kubernetes driver names a Deployment after each node, so node
+          # names are unique to the run and the image, or concurrent builds
+          # (any repo's: the namespace is shared) delete each other's builders.
+          suffix="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT:-1}-${{ matrix.target }}"
+          {
+            echo "build=true"
+            echo "repo=$repo"
+            echo "suffix=$suffix"
+            echo "builder=devbot-release-$suffix"
+          } >> "$GITHUB_OUTPUT"
+      - if: steps.cfg.outputs.build == 'true'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: login
+        if: steps.cfg.outputs.build == 'true'
+        run: |
+          echo "$DOCKER_HUB_PAT" | docker login -u "$DOCKER_HUB_USERNAME" --password-stdin
+          if [ ${{ matrix.target }} = claude ] && [ "$PUBLISH_CLAUDE_IMAGE" != true ] && [ -n "$REGISTRY_USERNAME" ]; then
+            echo "$REGISTRY_PASSWORD" | docker login "${CLAUDE_IMAGE_REPO%%/*}" -u "$REGISTRY_USERNAME" --password-stdin
+          fi
+      - name: kubernetes builder
+        if: steps.cfg.outputs.build == 'true'
+        run: |
+          [ -n "$KUBE_CONFIG" ] && [ -n "$BUILDX_NAMESPACE" ] || { echo "::error::a multi-arch release needs KUBE_CONFIG and BUILDX_NAMESPACE"; exit 1; }
+          dir=$(mktemp -d)
+          echo "$KUBE_CONFIG" | base64 -d > "$dir/kubeconfig"
+          echo "KUBECONFIG=$dir/kubeconfig" >> "$GITHUB_ENV"
+          export KUBECONFIG=$dir/kubeconfig
+          builder=${{ steps.cfg.outputs.builder }}
+          suffix=${{ steps.cfg.outputs.suffix }}
+          docker buildx create --name "$builder" --driver kubernetes --platform linux/amd64 \
+            --node "builder-amd64-$suffix" \
+            --driver-opt "namespace=$BUILDX_NAMESPACE,nodeselector=kubernetes.io/arch=amd64" --bootstrap
+          # The arm64 builder may also run on a node tainted
+          # node-role.kubernetes.io/ham. The fields are CSV, so the
+          # toleration's own commas are quoted.
+          docker buildx create --append --name "$builder" --driver kubernetes --platform linux/arm64 \
+            --node "builder-arm64-$suffix" \
+            --driver-opt "\"namespace=$BUILDX_NAMESPACE\",\"nodeselector=kubernetes.io/arch=arm64\",\"tolerations=key=node-role.kubernetes.io/ham,operator=Exists,effect=NoSchedule\"" --bootstrap
+      - name: image
+        if: steps.cfg.outputs.build == 'true'
+        env:
+          BUILDER: ${{ steps.cfg.outputs.builder }}
+          PLATFORMS: linux/amd64,linux/arm64
+        run: |
+          refs() { for t in ${{ needs.settings.outputs.tags }}; do echo "$1:$t"; done; }
+          hack/image-build ${{ matrix.target }} "${{ needs.settings.outputs.version }}" $(refs "${{ steps.cfg.outputs.repo }}")
+      - name: remove builder
+        if: always() && steps.cfg.outputs.build == 'true'
+        run: docker buildx rm "${{ steps.cfg.outputs.builder }}" || true
+
+  # After every image, so a published chart always has its images. The
+  # packaged copy defaults to the Docker Hub images; their tag is the
+  # appVersion. The repo's values.yaml stays install-neutral.
+  chart:
+    needs: [settings, images]
+    if: needs.settings.outputs.chart == 'true'
+    runs-on: ubuntu-latest
+    env:
+      DOCKER_HUB_USERNAME: ${{ secrets.DOCKER_HUB_USERNAME }}
+      DOCKER_HUB_PAT: ${{ secrets.DOCKER_HUB_PAT }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: azure/setup-helm@b9e51907a09c216f16ebe8536097933489208112 # v4.3.0
+      - name: chart
+        run: |
+          echo "$DOCKER_HUB_PAT" | helm registry login registry-1.docker.io -u "$DOCKER_HUB_USERNAME" --password-stdin
+          clean=${{ needs.settings.outputs.clean }}
+          dir=$(mktemp -d)
+          cp -r deploy/helm/devbot "$dir/devbot"
+          image=docker.io/${{ needs.settings.outputs.image }}
+          values=$dir/devbot/values.yaml
+          sed -i -e "s|^  repository: devbot$|  repository: $image|" \
+            -e "s|^      repository: devbot-codex$|      repository: $image-codex|" "$values"
+          grep -q "^  repository: $image$" "$values" && grep -q "^      repository: $image-codex$" "$values" \
+            || { echo "::error::image.repository or image.agents.codex.repository wasn't rewritten in the packaged values.yaml"; exit 1; }
+          if [ "${{ needs.settings.outputs.claude_public }}" = true ]; then
+            sed -i "/^    claude:$/,/^      repository:/ s|^      repository: \"\"$|      repository: $image-claude|" "$values"
+            grep -q "^      repository: $image-claude$" "$values" \
+              || { echo "::error::image.agents.claude.repository wasn't rewritten in the packaged values.yaml"; exit 1; }
+          fi
+          # Docker Hub keeps an OCI chart in the repository named after the
+          # chart, so as devbot it would overwrite the image's X.Y.Z tag.
+          sed -i 's/^name: devbot$/name: devbot-chart/' "$dir/devbot/Chart.yaml"
+          grep -q '^name: devbot-chart$' "$dir/devbot/Chart.yaml" \
+            || { echo "::error::the packaged Chart.yaml wasn't renamed to devbot-chart"; exit 1; }
+          helm package "$dir/devbot" -d "$dir" --version "$clean" --app-version "$clean"
+          helm push "$dir/devbot-chart-$clean.tgz" "oci://registry-1.docker.io/$DOCKER_HUB_USERNAME"
+
+  # The release itself: the CLI for each OS and arch with checksums, and the
+  # CHANGELOG section for the version as its notes. A pre-release tag makes
+  # a pre-release.
+  cli:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with: { fetch-depth: 0 }
+      - name: tag is on main
+        run: |
+          git fetch -q origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main \
+            || { echo "::error::$GITHUB_REF_NAME ($GITHUB_SHA) isn't on main"; exit 1; }
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with: { go-version-file: go.mod, cache: true }
+      - name: build
+        run: hack/release-cli "$GITHUB_REF_NAME" "$RUNNER_TEMP/dist"
+      - name: release
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          version=$GITHUB_REF_NAME
+          api=$GITHUB_SERVER_URL/api/v1/repos/$GITHUB_REPOSITORY
+          # The CHANGELOG section headed [X.Y.Z], without its heading.
+          notes=$(awk -v v="${version#v}" '/^## \[/ { if (on) exit; on = index($0, "[" v "]") > 0; next } on' CHANGELOG.md)
+          pre=false; [[ $version =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || pre=true
+          body=$(jq -n --arg t "$version" --arg n "${notes:-See CHANGELOG.md.}" --argjson p "$pre" \
+            '{tag_name: $t, name: $t, body: $n, prerelease: $p}')
+          id=$(curl -fsS -H "Authorization: token $TOKEN" "$api/releases/tags/$version" | jq -r .id 2>/dev/null || true)
+          if [ -z "$id" ] || [ "$id" = null ]; then
+            id=$(curl -fsS -X POST -H "Authorization: token $TOKEN" -H 'Content-Type: application/json' \
+              "$api/releases" -d "$body" | jq -r .id)
+          fi
+          for f in "$RUNNER_TEMP"/dist/*; do
+            curl -fsS -X POST -H "Authorization: token $TOKEN" \
+              -F "attachment=@$f" "$api/releases/$id/assets?name=$(basename "$f")" >/dev/null
+          done
+      # The same release on the GitHub mirror, once the mirror workflow has
+      # pushed the tag there.
+      - name: GitHub release
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+          MIRROR_REPO: ${{ vars.MIRROR_REPO }}
+        run: |
+          [ -n "$GH_PAT" ] && [ -n "$MIRROR_REPO" ] || { echo "::notice::GH_PAT or MIRROR_REPO is not set; no GitHub release"; exit 0; }
+          version=$GITHUB_REF_NAME
+          repo=${MIRROR_REPO#github.com/}
+          api=https://api.github.com/repos/$repo
+          h=(-H "Authorization: Bearer $GH_PAT" -H "Accept: application/vnd.github+json")
+          for i in $(seq 1 40); do
+            curl -fsS "${h[@]}" "$api/git/ref/tags/$version" >/dev/null 2>&1 && break
+            [ "$i" = 40 ] && { echo "::error::$version never reached $MIRROR_REPO"; exit 1; }
+            sleep 15
+          done
+          notes=$(awk -v v="${version#v}" '/^## \[/ { if (on) exit; on = index($0, "[" v "]") > 0; next } on' CHANGELOG.md)
+          pre=false; [[ $version =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || pre=true
+          body=$(jq -n --arg t "$version" --arg n "${notes:-See CHANGELOG.md.}" --argjson p "$pre" \
+            '{tag_name: $t, name: $t, body: $n, prerelease: $p}')
+          id=$(curl -fsS "${h[@]}" "$api/releases/tags/$version" 2>/dev/null | jq -r .id || true)
+          if [ -z "$id" ] || [ "$id" = null ]; then
+            id=$(curl -fsS -X POST "${h[@]}" "$api/releases" -d "$body" | jq -r .id)
+          fi
+          for f in "$RUNNER_TEMP"/dist/*; do
+            curl -fsS -X POST "${h[@]}" -H "Content-Type: application/octet-stream" --data-binary "@$f" \
+              "https://uploads.github.com/repos/$repo/releases/$id/assets?name=$(basename "$f")" >/dev/null
+          done

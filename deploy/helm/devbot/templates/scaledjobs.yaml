@@ -1,0 +1,82 @@
+{{- /* The job pods are KEDA ScaledJobs. Offline (helm template, helm lint)
+helm knows no kinds at all, so this, like the admission policy's check,
+only runs against a cluster. 2.16's ScaledJob CRD is the first whose pod
+template has appArmorProfile, which the Docker sidecar sets: an older one
+prunes it, and the daemon fails at run time. lookup only answers on an
+install or upgrade. */}}
+{{- $offline := not (.Capabilities.APIVersions.Has "v1/Pod") }}
+{{- if and (not $offline) (not (.Capabilities.APIVersions.Has "keda.sh/v1alpha1/ScaledJob")) }}
+{{- fail "KEDA: this cluster doesn't serve keda.sh/v1alpha1 ScaledJob, which devbot's job pods are. Install KEDA 2.16 or later first (https://keda.sh/docs/deploy/), then devbot" }}
+{{- end }}
+{{- if .Values.docker.mode }}
+{{- with lookup "apiextensions.k8s.io/v1" "CustomResourceDefinition" "" "scaledjobs.keda.sh" }}
+{{- if not (contains "appArmorProfile" (toJson .spec)) }}
+{{- fail "docker.mode: this cluster's KEDA ScaledJob CRD has no appArmorProfile, so it would drop the Docker sidecar's and the daemon would fail. Upgrade KEDA to 2.16 or later" }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- /* KEDA reads queue lengths as its own Redis user, which can read nothing
+else, and with the CA and Sentinel password devbot has. A
+TriggerAuthentication takes the user name only from a Secret too. */}}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-keda-redis-user
+  labels: {{- include "devbot.labels" . | nindent 4 }}
+type: Opaque
+stringData: { username: devbot-keda }
+---
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: {{ .Release.Name }}-redis
+  labels: {{- include "devbot.labels" . | nindent 4 }}
+spec:
+  secretTargetRef:
+    - { parameter: username, name: {{ .Release.Name }}-keda-redis-user, key: username }
+    - { parameter: password, name: {{ include "devbot.redisSecret" . }}, key: keda-password }
+    {{- range $param, $key := include "devbot.redisExtraSecrets" . | fromYaml }}
+    - { parameter: {{ $param }}, name: {{ $.Values.secrets.redis }}, key: {{ $key }} }
+    {{- end }}
+{{- /* Each role's jobs, and with docker.mode those of repos that ask for a
+Docker daemon, from a list of their own (queue.QueueKey): a KEDA template
+can't vary by the item a pod goes on to take. */}}
+{{- range $kind := list "implement" "review" }}
+{{- range $docker := ternary (list false true) (list false) (ne $.Values.docker.mode "") }}
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledJob
+metadata:
+  name: {{ $.Release.Name }}-{{ $kind }}{{ if $docker }}-docker{{ end }}
+  labels: {{- include "devbot.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $kind }}
+spec:
+  pollingInterval: {{ $.Values.jobs.pollingInterval }}
+  maxReplicaCount: {{ $.Values.jobs.maxReplicaCount }}
+  # Each pod pops its own item, so count queued items, not "items minus
+  # running jobs". An implement pod also takes parents' integration checks
+  # and, without a Docker daemon, their plan jobs (queue.PodKind), from lists
+  # of their own: a pod for each item of each.
+  scalingStrategy: { strategy: accurate, multipleScalersCalculation: sum }
+  # KEDA's default rollout deletes every running job when the ScaledJob
+  # changes, so each devbot deploy killed in-flight work. Gradual lets running
+  # jobs finish on the old template.
+  rollout: { strategy: gradual }
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 10
+  jobTargetRef:
+    backoffLimit: 0
+    activeDeadlineSeconds: {{ (index $.Values.jobs $kind).activeDeadlineSeconds }}
+    ttlSecondsAfterFinished: 3600
+    template:
+      {{- include "devbot.jobPod" (dict "root" $ "kind" $kind "docker" $docker) | nindent 6 }}
+  triggers:
+    {{- include "devbot.redisTrigger" (dict "root" $ "list" (printf "devbot:q:%s%s" $kind (ternary "-docker" "" $docker))) | nindent 4 }}
+    {{- if eq $kind "implement" }}
+    {{- include "devbot.redisTrigger" (dict "root" $ "list" (printf "devbot:q:integrate%s" (ternary "-docker" "" $docker))) | nindent 4 }}
+    {{- if not $docker }}
+    {{- include "devbot.redisTrigger" (dict "root" $ "list" "devbot:q:plan") | nindent 4 }}
+    {{- end }}
+    {{- end }}
+{{- end }}
+{{- end }}

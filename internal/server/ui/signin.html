@@ -1,0 +1,3 @@
+{{define "main"}}<h1>Sign in</h1>
+<p>devbot shows you the tasks and jobs on the repos you can read on {{with .Forge}}{{.}}{{else}}the forge{{end}}.</p>
+<p><a class="button" href="login">Sign in with {{with .Forge}}{{.}}{{else}}the forge{{end}}</a></p>{{end}}

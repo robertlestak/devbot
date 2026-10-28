@@ -1,0 +1,22 @@
+#!/bin/sh
+# image-build TARGET VERSION REF...: build docker/Dockerfile's TARGET (base,
+# codex or claude) with VERSION and this checkout's commit in its labels, tag
+# it as every REF and push them. PLATFORMS (default linux/amd64) is the
+# buildx platform list and BUILDER the buildx builder, if not the current one.
+# PUSH=false builds and loads it locally instead, for one platform.
+set -eu
+[ $# -ge 3 ] || { echo "usage: hack/image-build base|codex|claude VERSION REF..." >&2; exit 2; }
+target=$1 version=$2
+shift 2
+case $target in
+base | codex | claude) ;;
+*) echo "image-build: unknown target $target (base, codex or claude)" >&2; exit 2 ;;
+esac
+cd "$(dirname "$0")/.."
+set -- $(for ref in "$@"; do printf -- '-t %s ' "$ref"; done)
+output=--push
+[ "${PUSH:-true}" = true ] || output=--load
+exec docker buildx build ${BUILDER:+--builder "$BUILDER"} \
+	--platform "${PLATFORMS:-linux/amd64}" -f docker/Dockerfile --target "$target" \
+	--build-arg VERSION="$version" --build-arg REVISION="$(git rev-parse HEAD)" \
+	"$@" "$output" .

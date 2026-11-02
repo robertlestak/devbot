@@ -1,7 +1,7 @@
 // Package codex is the agent harness for OpenAI's Codex CLI: codex exec
 // --json, its JSONL event stream, and its error messages.
 //
-// Flags are those of codex-cli 0.164.0 (`codex exec --help`, `codex exec
+// Flags are those of codex-cli 0.166.0 (`codex exec --help`, `codex exec
 // resume --help`), the version docker/Dockerfile pins.
 package codex
 

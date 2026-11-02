@@ -10,7 +10,7 @@
 
 ARG DEBIAN_IMAGE=debian:13-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f
 ARG BASE=docker.io/robertlestak/devbot:latest
-ARG CLAUDE_VERSION=2.1.310
+ARG CLAUDE_VERSION=2.1.316
 
 FROM ${DEBIAN_IMAGE} AS fetch-claude
 RUN apt-get update \

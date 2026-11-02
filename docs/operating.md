@@ -498,7 +498,7 @@ only needs `docker/`), for both architectures:
 docker buildx build -f docker/claude.Dockerfile \
   --platform linux/amd64,linux/arm64 \
   --build-arg BASE=docker.io/robertlestak/devbot:v1.4.2 \
-  --build-arg CLAUDE_VERSION=2.1.310 \
+  --build-arg CLAUDE_VERSION=2.1.316 \
   -t registry.example.com/private/devbot-claude:v1.4.2 --push .
 ```
 
@@ -544,7 +544,7 @@ which image it needs: neither falls back to the base image.
 To move to a newer Claude Code, rebuild with a newer `CLAUDE_VERSION` (any
 version Anthropic has a manifest for; `curl -fsSL
 https://downloads.claude.ai/claude-code-releases/latest` prints the newest)
-and a tag of your own, such as `v1.4.2-claude2.1.310`, then set
+and a tag of your own, such as `v1.4.2-claude2.1.316`, then set
 `image.agents.claude.tag` to it. Run `TestPinnedCLIsThroughTheProxy` with it
 first (see [Model proxy](#model-proxy)): the proxy forwards only the routes
 the pinned CLIs call.
@@ -1101,7 +1101,7 @@ exits or times out, so nothing the CLI started outlives the run.
 
 ### Codex
 
-The `codex` harness runs the Codex CLI 0.164.0 in non-interactive mode, with
+The `codex` harness runs the Codex CLI 0.166.0 in non-interactive mode, with
 the flags its `codex exec --help` lists:
 
 ```text
@@ -1150,7 +1150,7 @@ sandbox is safe only because the agent container is the sandbox.
   can't follow.
   **It hasn't been run against OpenAI** ([Tested
   environments](#tested-environments)). It is implemented to OpenAI's
-  documentation, covered by tests against a fake `codex`, and the real `codex` 0.164.0 has been run through the proxy
+  documentation, covered by tests against a fake `codex`, and the real `codex` 0.166.0 has been run through the proxy
   against a fake API, which got the proxy's key and not the placeholder.
 - **Repo guidance.** Codex reads `AGENTS.md` itself, and devbot's prompts name
   both `AGENTS.md` and `CLAUDE.md`. In a repo with neither, Codex runs as

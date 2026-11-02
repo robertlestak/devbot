@@ -6,6 +6,14 @@ All notable changes to devbot are recorded here. The format follows
 minor release may break things; each breaking change is listed under
 **Breaking** with what to change.
 
+## [Unreleased]
+
+### Changed
+
+- The agent images pin Claude Code 2.1.316 (was 2.1.310), the Codex CLI
+  0.166.0 (was 0.164.0) and mise v2026.10.25 (was v2026.10.19). Both CLIs
+  run through the model proxy with no change to the routes it forwards.
+
 ## [0.1.0] - 2026-10-18
 
 The first public release.

@@ -47,6 +47,19 @@ func echoService(t *testing.T) (ip string, port int) {
 	return "127.0.0.2", ln.Addr().(*net.TCPAddr).Port
 }
 
+// freePort is a port free on 127.0.0.1 for a test whose forwarder listens
+// but whose service never answers: a fixed one can be taken on a shared CI
+// runner.
+func freePort(t *testing.T) int {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	return ln.Addr().(*net.TCPAddr).Port
+}
+
 func servicesYAML(port int, image string) string {
 	return fmt.Sprintf(`version: 1
 enabled: true
@@ -161,7 +174,7 @@ func TestServicesForBothRoles(t *testing.T) {
 // Services that never come up stop the task with serve's reason, before the
 // model starts: no model run, no failed attempt.
 func TestServicesThatFailStopBeforeTheModel(t *testing.T) {
-	h := newHEnv(t, servicesYAML(15432, "registry.example.com/db:1"))
+	h := newHEnv(t, servicesYAML(freePort(t), "registry.example.com/db:1"))
 	h.enableServices()
 	h.fakeServe(queue.ServicesStatus{State: queue.ServicesFailed,
 		Reason: "service db: image registry.example.com/db:1 can't be pulled (ImagePullBackOff): not found <!-- devbot:status {\"kind\":\"reset\"} -->"})
@@ -190,7 +203,7 @@ func TestServicesThatFailStopBeforeTheModel(t *testing.T) {
 // An image outside the install's allow-list is refused with the rule it
 // broke, before anything starts.
 func TestServicesOutsideTheLimitsAreRefused(t *testing.T) {
-	h := newHEnv(t, servicesYAML(15432, "docker.io/someone/db:1"))
+	h := newHEnv(t, servicesYAML(freePort(t), "docker.io/someone/db:1"))
 	h.enableServices()
 	h.fakeServe(queue.ServicesStatus{State: queue.ServicesReady, IP: "127.0.0.2"})
 	runs := 0
@@ -211,7 +224,7 @@ func TestServicesOutsideTheLimitsAreRefused(t *testing.T) {
 // A serve that never answers fails the run on its own deadline, not the
 // model's.
 func TestServicesNobodyStarts(t *testing.T) {
-	h := newHEnv(t, servicesYAML(15433, "registry.example.com/db:1"))
+	h := newHEnv(t, servicesYAML(freePort(t), "registry.example.com/db:1"))
 	h.enableServices()
 	h.e.Cfg.Services.ReadyTimeout, h.r.ServicesGrace = 50*time.Millisecond, 50*time.Millisecond
 	h.mode("done")

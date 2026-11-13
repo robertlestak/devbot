@@ -1,0 +1,58 @@
+#!/bin/bash
+# Checks, live, that a Gitea starts no Actions run for a push to a ref that is
+# neither a branch nor a tag, where devbot keeps work held for approval
+# (refs/devbot/held/<issue>), while a branch push of the same commit does:
+#   hack/held-ref-check <gitea-url> <user> <password> <new-repo-name>
+# Point it at a throwaway Gitea, or a sandbox account: it makes a token and a
+# repo there, and deletes the token when it ends. The runs API needs Gitea
+# 1.25 or later; on an older one, count the rows of its action_run table
+# instead. Needs curl, git and jq.
+set -eu
+url=$1 user=$2 pass=$3 repo=$4 api=$1/api/v1 name=held-ref-check-$RANDOM
+tok=$(curl -sf -u "$user:$pass" -H 'Content-Type: application/json' -X POST "$api/users/$user/tokens" \
+  -d "{\"name\":\"$name\",\"scopes\":[\"all\"]}" | jq -r .sha1)
+dir=$(mktemp -d)
+trap 'rm -rf "$dir"; curl -sf -u "$user:$pass" -X DELETE "$api/users/$user/tokens/$name" >/dev/null || echo "delete the token $name by hand" >&2' EXIT
+auth="Authorization: token $tok"
+curl -sf -H "$auth" -H 'Content-Type: application/json' -X POST "$api/user/repos" \
+  -d "{\"name\":\"$repo\",\"auto_init\":true,\"default_branch\":\"main\"}" >/dev/null
+# The runs so far, but for the workflow_run reruns Gitea starts on main.
+runs() {
+  sleep 5
+  curl -sf -H "$auth" "$api/repos/$user/$repo/actions/runs?limit=50" |
+    jq -c '[.workflow_runs[] | select(.event != "workflow_run") | [.event, .head_branch]]' 2>/dev/null || echo "(no runs API on this Gitea)"
+}
+remote=${url/:\/\//://$user:$tok@}/$user/$repo.git
+git clone -q "$remote" "$dir/r"
+cd "$dir/r"
+git config user.name check
+git config user.email check@example.com
+mkdir -p .gitea/workflows
+cat > .gitea/workflows/ci.yaml <<'YAML'
+on: [push, create, delete, pull_request, pull_request_target]
+jobs:
+  x:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo hi
+YAML
+git add -A
+git commit -qm ci
+git push -q origin main
+echo "runs after a push to main (control): $(runs)"
+# What devbot would hold: a workflow change that reads a secret.
+echo '      - run: echo ${{ secrets.TOKEN }}' >> .gitea/workflows/ci.yaml
+git commit -qam "held change"
+held=$(git rev-parse HEAD)
+git push -q origin HEAD:refs/devbot/held/7
+echo "runs after pushing refs/devbot/held/7: $(runs)"
+git ls-remote origin 'refs/devbot/*'
+git init -q "$dir/f"
+git -C "$dir/f" fetch -q "$remote" refs/devbot/held/7:refs/x
+echo "fetched back into a fresh repo: $(git -C "$dir/f" rev-parse refs/x) (pushed $held)"
+git commit -q --allow-empty -m again
+git push -q -f origin HEAD:refs/devbot/held/7
+git push -q origin :refs/devbot/held/7
+echo "runs after force-updating and deleting it: $(runs)"
+git push -q origin "$held:refs/heads/devbot/7-x" 2>/dev/null
+echo "runs after pushing the same commit to refs/heads/devbot/7-x (control): $(runs)"

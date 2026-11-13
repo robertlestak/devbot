@@ -1,0 +1,58 @@
+{{define "main"}}<h1>Running now</h1>
+{{with .Jobs.HoldUntil}}<p class="warn">Usage-limit hold: no new Claude runs until <time datetime="{{iso .}}">{{clock .}}</time> ({{until .}}).</p>{{end}}
+{{if .Jobs.Running}}
+<table>
+<thead><tr><th>Kind</th><th>Repo</th><th>Issue</th><th>PR</th><th>Progress</th><th>Started</th></tr></thead>
+<tbody>
+{{range .Jobs.Running}}<tr>
+{{template "kind" .}}
+<td data-label="Repo" class="nowrap" title="{{.Repo}}">{{repo $.OnlyForge .Repo}}</td>
+<td data-label="Issue" class="issue">{{template "issue" .}}</td>
+{{template "pr" .}}
+<td data-label="Progress">{{if .MaxAttempts}}attempt {{.Attempt}} of {{.MaxAttempts}}{{else if .MaxRounds}}round {{.Round}} of {{.MaxRounds}}{{end}}{{with .Reason}}<div class="sub clamp" title="{{.}}">{{.}}</div>{{end}}{{if .Holder}}<div class="sub" title="held by {{.Holder}}">on <code>{{pod .Kind .Holder}}</code></div>{{end}}</td>
+<td data-label="Started" class="nowrap">{{if not .Started.IsZero}}<time datetime="{{iso .Started}}" title="started {{clock .Started}}">{{age .Started}} ago</time>{{end}}{{if not .Heartbeat.IsZero}}<div class="sub">heartbeat <time datetime="{{iso .Heartbeat}}" title="{{clock .Heartbeat}}">{{age .Heartbeat}} ago</time></div>{{end}}</td>
+</tr>{{end}}
+</tbody>
+</table>
+{{else}}<p class="empty">Nothing is running.</p>{{end}}
+
+<h2>Queued</h2>
+{{if .Jobs.Queued}}
+<table>
+<thead><tr><th>Kind</th><th>Repo</th><th>Issue</th><th>PR</th><th>Why</th><th>Queued</th><th>Retries</th></tr></thead>
+<tbody>
+{{range .Jobs.Queued}}<tr>
+{{template "kind" .}}
+<td data-label="Repo" class="nowrap" title="{{.Repo}}">{{repo $.OnlyForge .Repo}}</td>
+<td data-label="Issue" class="issue">{{template "issue" .}}</td>
+{{template "pr" .}}
+<td data-label="Why">{{with .Reason}}<div class="clamp" title="{{.}}">{{.}}</div>{{end}}</td>
+<td data-label="Queued" class="nowrap">{{if not .EnqueuedAt.IsZero}}<time datetime="{{iso .EnqueuedAt}}" title="{{clock .EnqueuedAt}}">{{age .EnqueuedAt}} ago</time>{{end}}</td>
+<td data-label="Retries" class="nowrap">{{with .Retries}}{{.}}{{end}}</td>
+</tr>{{end}}
+</tbody>
+</table>
+{{else}}<p class="empty">Nothing is queued.</p>{{end}}
+
+<h2>Delayed</h2>
+{{if .Jobs.Delayed}}
+<table>
+<thead><tr><th>Kind</th><th>Repo</th><th>Issue</th><th>PR</th><th>Why</th><th>Released</th><th>Retries</th></tr></thead>
+<tbody>
+{{range .Jobs.Delayed}}<tr>
+{{template "kind" .}}
+<td data-label="Repo" class="nowrap" title="{{.Repo}}">{{repo $.OnlyForge .Repo}}</td>
+<td data-label="Issue" class="issue">{{template "issue" .}}</td>
+{{template "pr" .}}
+<td data-label="Why">{{with .Reason}}<div class="clamp" title="{{.}}">{{.}}</div>{{end}}</td>
+<td data-label="Released" class="nowrap"><time datetime="{{iso .ReleaseAt}}" title="{{clock .ReleaseAt}}">{{until .ReleaseAt}}</time></td>
+<td data-label="Retries" class="nowrap">{{with .Retries}}{{.}}{{end}}</td>
+</tr>{{end}}
+</tbody>
+</table>
+{{else}}<p class="empty">Nothing is delayed.</p>{{end}}
+{{end}}
+
+{{define "kind"}}<td data-label="Kind" class="nowrap"><span class="kind">{{.Kind}}</span>{{with .Mode}} <span class="mode">{{.}}</span>{{end}}</td>{{end}}
+{{define "pr"}}<td data-label="PR" class="nowrap">{{if .PR}}<a href="{{.PRURL}}" rel="noopener noreferrer">#{{.PR}}</a>{{end}}</td>{{end}}
+{{define "issue"}}{{if .URL}}<a class="nowrap" href="{{.URL}}" rel="noopener noreferrer">{{num .Task}}</a>{{else}}<span class="nowrap">{{num .Task}}</span>{{end}} {{.Title}} <a class="sub nowrap" href="task?ref={{.Task}}">timeline</a>{{end}}

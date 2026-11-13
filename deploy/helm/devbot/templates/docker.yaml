@@ -1,0 +1,101 @@
+{{- $d := .Values.docker }}
+{{- if eq $d.mode "dind" }}
+---
+# Rootless Docker maps the daemon's root to the image's user (1000) and its
+# other IDs to these. The image's own range (100000 up) is outside the 65536
+# IDs a pod's user namespace has, so newuidmap would refuse it.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-dind
+  labels: {{- include "devbot.labels" . | nindent 4 }}
+    app.kubernetes.io/component: docker
+data:
+  subuid: "rootless:1001:64535\n"
+  subgid: "rootless:1001:64535\n"
+{{- if $d.dind.tunPlugin.enabled }}
+{{- $p := $d.dind.tunPlugin }}
+{{- $res := splitList "/" (include "devbot.tunResource" .) }}
+---
+# The device plugin's: nothing is bound to it, and it mounts no token.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Release.Name }}-tun-plugin
+  labels: {{- include "devbot.labels" . | nindent 4 }}
+    app.kubernetes.io/component: tun-plugin
+automountServiceAccountToken: false
+---
+# Gives /dev/net/tun out to the daemon's container, which slirp4netns needs:
+# a userns pod can't mount the node's by hostPath, as the kubelet idmaps
+# every volume of one and a device node can't be. The runtime adds a device
+# a plugin allocates to the container instead (docs/operating.md#dind).
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ .Release.Name }}-tun-plugin
+  labels: {{- include "devbot.labels" . | nindent 4 }}
+    app.kubernetes.io/component: tun-plugin
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: devbot
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: tun-plugin
+  template:
+    metadata:
+      labels: {{- include "devbot.labels" . | nindent 8 }}
+        app.kubernetes.io/component: tun-plugin
+      annotations:
+        sidecar.istio.io/inject: "false"
+    spec:
+      serviceAccountName: {{ .Release.Name }}-tun-plugin
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      {{- with include "devbot.imagePullSecrets" . | trim }}{{ . | nindent 6 }}{{ end }}
+      # On every node a job pod may land on, and only those.
+      {{- with .Values.jobs.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.jobs.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.jobs.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: tun-plugin
+          image: {{ $p.image }}
+          imagePullPolicy: IfNotPresent
+          # /dev/net/tun alone, count times per node: one per Docker job pod.
+          args:
+            - --domain={{ index $res 0 }}
+            - {{ printf "--device=%s" (dict "name" (index $res 1) "groups" (list (dict "count" $p.count "paths" (list (dict "path" "/dev/net/tun")))) | toJson) | squote }}
+            - --plugin-directory=/var/lib/kubelet/device-plugins
+          # The kubelet's device-plugin directory is a host path, so the pod
+          # runs in the node's user namespace, as root there: the kubelet's
+          # directory and socket are root's, mode 0750 and 0755. Being their
+          # owner is all it takes, so no capability: the plugin only globs
+          # /dev/net/tun, never opens it, and talks gRPC over the sockets.
+          securityContext:
+            runAsUser: 0
+            runAsGroup: 0
+            privileged: false
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+            seccompProfile: { type: RuntimeDefault }
+            readOnlyRootFilesystem: true
+          resources: {{- toYaml $p.resources | nindent 12 }}
+          volumeMounts:
+            - { name: device-plugins, mountPath: /var/lib/kubelet/device-plugins }
+            - { name: dev-net, mountPath: /dev/net, readOnly: true }
+      volumes:
+        - name: device-plugins
+          hostPath: { path: {{ $p.pluginDirectory }}, type: Directory }
+        - name: dev-net
+          hostPath: { path: /dev/net, type: Directory }
+{{- end }}
+{{- end }}

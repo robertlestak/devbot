@@ -1,0 +1,83 @@
+# An install against GitHub.com, or GitHub Enterprise Server, that only works
+# in repos which opt in with a .devbot.yaml, and only in one organization,
+# with connector callers signed in through GitHub and a push subscriber,
+# run highly available: two serve replicas on a managed Redis.
+# Layer over values.yaml:
+#   helm upgrade --install devbot oci://registry-1.docker.io/<your-dockerhub-user>/devbot-chart \
+#     --version X.Y.Z -n devbot -f my-values.yaml --wait=legacy
+# Setting up the two GitHub Apps: docs/operating.md#github. Every key:
+# docs/operating.md.
+
+# harness: claude needs a Claude Code image, which devbot doesn't publish:
+# build one and set image.agents.claude.repository in your own values
+# (docs/operating.md#agent-images).
+
+config:
+  providers:
+    - name: github                      # repo refs look like github:owner/name
+      type: github
+      url: https://api.github.com       # GHES: https://ghe.example.com/api/v3
+      implementer_app_id: 123456        # bots are GitHub Apps; logins come from their slugs
+      implementer_key_env: GITHUB_APP_DEVBOT_KEY
+      reviewer_app_id: 123457
+      reviewer_key_env: GITHUB_APP_REVIEW_KEY
+      webhook_secret_env: GITHUB_WEBHOOK_SECRET   # the implementer App's webhook secret
+  # A managed Redis, over TLS, instead of the bundled one, with the users
+  # devbot-serve, devbot-harness and devbot-keda (docs/operating.md#redis-for-ha).
+  redis:
+    addr: redis.example.internal:6380
+    tls: {enabled: true}
+  authorization:
+    min_permission: maintain            # GitHub roles: write, maintain or admin
+  auth:
+    mode: oauth                         # callers sign in to GitHub and act as themselves
+    resource_url: https://devbot.example.com
+    # The sign-in App's client ID and secret: the implementer App's, with
+    # its callback URL https://devbot.example.com/oauth/callback.
+    client_id_env: GITHUB_OAUTH_CLIENT_ID
+    client_secret_env: GITHUB_OAUTH_CLIENT_SECRET
+    key_env: DEVBOT_AUTH_KEY
+  repos:
+    opt_in: file
+    allow: ["github:example-org/*"]
+  subscribers:
+    - name: chat-relay
+      url: https://chat-relay.internal.example/devbot
+      secret_env: CHAT_RELAY_SECRET
+      types: [task.question, task.approved, task.merged, task.needs_human]
+
+secrets:
+  forge: devbot-forge-github            # GITHUB_APP_DEVBOT_KEY, GITHUB_APP_REVIEW_KEY (PEM), GITHUB_WEBHOOK_SECRET
+  agents:
+    claude: devbot-anthropic            # CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY
+  auth: devbot-auth                     # GITHUB_OAUTH_CLIENT_ID, GITHUB_OAUTH_CLIENT_SECRET, DEVBOT_AUTH_KEY (serve only)
+
+# Two replicas, spread across nodes and zones, with a PodDisruptionBudget;
+# one leads the reconcile loop and the subscriber (docs/operating.md#high-availability).
+serve:
+  replicas: 2
+
+redis:
+  enabled: false
+  existingSecret: devbot-redis          # serve-password, harness-password, keda-password
+
+# Links the implementer's commits to its App: <bot user ID>+<slug>[bot]@users.noreply.github.com,
+# with the ID from https://api.github.com/users/<slug>%5Bbot%5D.
+harnessEnv:
+  DEVBOT_COMMIT_EMAIL_GITHUB: "123456789+example-devbot[bot]@users.noreply.github.com"
+
+# Job pods reach only DNS, Redis, Anthropic's API and an egress proxy
+# (docs/operating.md#egress), which must allow api.github.com, github.com and
+# the registries the repos install from.
+networkPolicy:
+  egressProxy: { url: "http://egress-proxy.egress:3128", namespace: egress, port: 3128 }
+  # Job pods reach the managed Redis, in a private range.
+  allow:
+    - {cidr: 10.20.0.15/32, ports: [6380]}
+
+# GitHub.com delivers the webhook from the internet, to
+# https://devbot.example.com/webhooks/github.
+virtualService:
+  enabled: true
+  host: devbot.example.com
+  prefix: /

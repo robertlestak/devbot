@@ -1,0 +1,53 @@
+name: mirror
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# The repo is mirrored to GitHub (MIRROR_REPO, e.g. github.com/acme/devbot):
+# main and the v* tags, pushed with GH_PAT. A fork without them skips this.
+concurrency:
+  group: mirror
+  cancel-in-progress: false
+
+jobs:
+  github:
+    runs-on: ubuntu-latest
+    env:
+      GH_PAT: ${{ secrets.GH_PAT }}
+      MIRROR_REPO: ${{ vars.MIRROR_REPO }}
+    steps:
+      - name: settings
+        id: cfg
+        run: |
+          if [ -z "$GH_PAT" ] || [ -z "$MIRROR_REPO" ]; then
+            echo "::notice::GH_PAT or MIRROR_REPO is not set; not mirroring"
+            echo "mirror=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "mirror=true" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.cfg.outputs.mirror == 'true'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with: { fetch-depth: 0 }
+      # Says plainly when the token can't push here, rather than git's
+      # "could not read Username".
+      - name: token
+        if: steps.cfg.outputs.mirror == 'true'
+        run: |
+          repo=${MIRROR_REPO#github.com/}
+          code=$(curl -s -o "$RUNNER_TEMP/repo.json" -w '%{http_code}' -H "Authorization: Bearer $GH_PAT" "https://api.github.com/repos/$repo")
+          push=$(jq -r '.permissions.push // false' "$RUNNER_TEMP/repo.json" 2>/dev/null || echo false)
+          echo "GitHub API: HTTP $code for $repo, push=$push"
+          [ "$code" = 200 ] && [ "$push" = true ] || { echo "::error::GH_PAT can't push to $repo (HTTP $code, push=$push): it needs Contents read/write on it (fine-grained) or the repo scope (classic)"; exit 1; }
+      - name: push
+        if: steps.cfg.outputs.mirror == 'true'
+        run: |
+          # On a tag run checkout rewrites that tag locally as a lightweight
+          # one; -f puts the real (annotated) tags back before they're pushed.
+          git fetch -q -f --tags origin
+          git push --force "https://x-access-token:$GH_PAT@$MIRROR_REPO.git" \
+            origin/main:refs/heads/main 'refs/tags/v*:refs/tags/v*'

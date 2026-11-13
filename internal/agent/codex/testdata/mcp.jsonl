@@ -1,0 +1,8 @@
+{"type":"thread.started","thread_id":"0199a213-81c0-7800-8aa1-bbab2a035a54"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"error","message":"MCP client for `playwright` failed to start: connection refused"}}
+{"type":"item.started","item":{"id":"item_1","type":"mcp_tool_call","server":"context7","tool":"resolve-library-id","arguments":{"libraryName":"cobra"},"result":null,"error":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_1","type":"mcp_tool_call","server":"context7","tool":"resolve-library-id","arguments":{"libraryName":"cobra"},"result":{"content":[],"structured_content":null},"error":null,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_2","type":"mcp_tool_call","server":"context7","tool":"get-library-docs","arguments":{},"result":null,"error":{"message":"timed out"},"status":"failed"}}
+{"type":"item.completed","item":{"id":"item_3","type":"agent_message","text":"Done."}}
+{"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":10,"reasoning_output_tokens":0}}

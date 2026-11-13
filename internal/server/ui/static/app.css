@@ -1,0 +1,76 @@
+/* devbot's web UI. Light and dark follow the system; narrow screens get
+   one card per row instead of a wide table. */
+:root {
+  color-scheme: light dark;
+  --bg: #fff; --fg: #1f2328; --muted: #59636e; --line: #d1d9e0; --head: #f6f8fa;
+  --link: #0757c2; --warn-bg: #fff8c5; --warn: #7d4e00; --bad: #b42318; --ok: #1a7f37; --accent: #6639ba;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0d1117; --fg: #e6edf3; --muted: #9198a1; --line: #3d444d; --head: #151b23;
+    --link: #58a6ff; --warn-bg: #3a2e00; --warn: #e3b341; --bad: #ff7b72; --ok: #3fb950; --accent: #bc8cff;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+a { color: var(--link); }
+code { font: 13px ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
+header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .5rem 1rem;
+  padding: .6rem 1rem; border-bottom: 1px solid var(--line); background: var(--head); }
+nav { display: flex; flex-wrap: wrap; gap: .25rem 1rem; align-items: baseline; }
+nav a { text-decoration: none; }
+nav a[aria-current] { font-weight: 600; text-decoration: underline; }
+nav .brand { font-weight: 700; color: var(--fg); margin-right: .5rem; }
+.who { display: flex; gap: .5rem; align-items: center; margin: 0; color: var(--muted); }
+button, select, input, .button { font: inherit; color: inherit; background: var(--bg); border: 1px solid var(--line);
+  border-radius: 6px; padding: .25rem .6rem; }
+.button { display: inline-block; text-decoration: none; padding: .45rem 1rem; }
+button { cursor: pointer; }
+.filters { display: flex; flex-wrap: wrap; gap: .5rem 1rem; align-items: center; padding: .6rem 1rem; border-bottom: 1px solid var(--line); }
+.filters input { width: 14rem; max-width: 100%; }
+main { padding: 0 1rem 2rem; max-width: 100rem; }
+h1 { font-size: 1.4rem; margin: 1rem 0 .75rem; overflow-wrap: anywhere; }
+h2 { font-size: 1.1rem; margin: 1.5rem 0 .5rem; }
+.count { color: var(--muted); font-weight: 400; }
+table { border-collapse: collapse; width: 100%; }
+/* break-word, not anywhere: with anywhere a cell's min-content width is one
+   character, so auto layout squeezes short columns until "#27" breaks. */
+th, td { text-align: left; vertical-align: top; padding: .35rem .5rem; border-bottom: 1px solid var(--line); overflow-wrap: break-word; }
+.nowrap { white-space: nowrap; }
+td.issue { min-width: 12rem; }
+/* Free text gets two lines, the rest in its title, so one long reason
+   can't take over the table. */
+.clamp { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden;
+  min-width: 12rem; max-width: 32rem; overflow-wrap: anywhere; }
+th { background: var(--head); font-weight: 600; white-space: nowrap; }
+.sub, .updated, .empty { color: var(--muted); }
+.sub { font-size: .9em; }
+.updated { font-size: .85rem; margin-top: 2rem; }
+.kind { font-weight: 600; }
+.mode, .badge { font-size: .8em; border: 1px solid var(--line); border-radius: 1em; padding: 0 .5em; color: var(--muted); }
+.state.attention { color: var(--bad); }
+.state.working, .state.in-review, .state.in-progress { color: var(--accent); }
+.state.approved, .state.merged { color: var(--ok); }
+.warn { background: var(--warn-bg); color: var(--warn); padding: .5rem .75rem; border-radius: 6px; }
+.err { color: var(--bad); }
+.facts { display: grid; grid-template-columns: max-content 1fr; gap: .25rem 1rem; }
+.facts dt { color: var(--muted); }
+.facts dd { margin: 0; overflow-wrap: anywhere; }
+.timeline { list-style: none; padding: 0; margin: 0; border-left: 2px solid var(--line); }
+.timeline li { padding: .4rem 0 .6rem 1rem; position: relative; }
+.timeline li::before { content: ""; position: absolute; left: -6px; top: .85rem; width: 10px; height: 10px; border-radius: 50%; background: var(--line); }
+.timeline li.comment::before { background: var(--accent); }
+.timeline time { color: var(--muted); font-size: .85rem; margin-right: .5rem; }
+.timeline summary { cursor: pointer; }
+.text { white-space: pre-wrap; overflow-wrap: anywhere; font-size: .9rem; border-left: 3px solid var(--line); padding: .25rem .75rem; margin: .4rem 0; }
+@media (max-width: 760px) {
+  table, thead, tbody, tr, th, td { display: block; }
+  thead { display: none; }
+  tr { border: 1px solid var(--line); border-radius: 8px; margin: 0 0 .75rem; padding: .35rem .25rem; }
+  td { border: 0; padding: .15rem .5rem .15rem 7.5rem; position: relative; min-height: 1.6rem; overflow-wrap: anywhere; }
+  td::before { content: attr(data-label); position: absolute; left: .5rem; width: 6.5rem; color: var(--muted); font-size: .85rem; }
+  td:empty { display: none; }
+  .nowrap { white-space: normal; }
+  td.issue, .clamp { min-width: 0; }
+  .clamp { display: block; max-width: none; -webkit-line-clamp: none; line-clamp: none; }
+}

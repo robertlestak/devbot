@@ -1,0 +1,5 @@
+{"type":"thread.started","thread_id":"01a14a05-91b2-7f44-8c0d-3a6e2b7f9c15"}
+{"type":"turn.started"}
+{"type":"error","message":"Reconnecting... 4/5 (unexpected status 503 Service Unavailable: upstream connect error, url: https://api.openai.com/v1/responses)"}
+{"type":"error","message":"Reconnecting... 5/5 (unexpected status 503 Service Unavailable: upstream connect error, url: https://api.openai.com/v1/responses)"}
+{"type":"turn.failed","error":{"message":"exceeded retry limit, last status: 503 Service Unavailable, request id: req_6b1f0e2d9a8c4b37a5e1d0c9f8b7a6e5"}}

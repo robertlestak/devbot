@@ -1,0 +1,83 @@
+#!/bin/sh
+# image-versions [-w]: compare the Claude Code, Codex and mise versions
+# pinned in docker/Dockerfile (and docker/claude.Dockerfile) with their
+# latest releases, one "name pinned latest" line each that is behind. With
+# -w, also rewrite the pins, with the SHA-256s each project publishes for
+# the new release, for a bump PR: the build then checks the downloads
+# against them. Exits 0 either way; with -w, `git diff` shows what moved.
+set -eu
+write=false
+[ "${1:-}" = -w ] && write=true
+cd "${IMAGE_VERSIONS_ROOT:-$(dirname "$0")/..}"
+claude_url=${CLAUDE_DOWNLOAD_URL:-https://downloads.claude.ai/claude-code-releases}
+github=${GITHUB_URL:-https://github.com}
+
+pinned() { sed -n "s/^ARG $1=//p" docker/Dockerfile; }
+
+# The tag GitHub's /releases/latest redirects to.
+latest_tag() {
+	curl -fsS -o /dev/null -w '%{redirect_url}' "$github/$1/releases/latest" | sed 's|.*/tag/||'
+}
+
+# sha256 FILE NAME: NAME's SHA-256 in a sha256sum-format FILE's content.
+sha256() {
+	printf '%s\n' "$1" | awk -v n="$2" '{ f = $2; sub(/^[*.\/]+/, "", f) } f == n { print $1; exit }' | grep -E '^[0-9a-f]{64}$' ||
+		{ echo "image-versions: no SHA-256 for $2" >&2; exit 1; }
+}
+
+set_arg() {
+	for f in docker/Dockerfile docker/claude.Dockerfile; do
+		[ -f "$f" ] && sed -i "s|^ARG $1=.*|ARG $1=$2|" "$f"
+	done
+}
+
+behind=false
+
+have=$(pinned CLAUDE_VERSION)
+want=$(curl -fsSL "$claude_url/latest")
+echo "$want" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || { echo "image-versions: Claude Code's latest is '$want'" >&2; exit 1; }
+if [ "$have" != "$want" ]; then
+	echo "claude $have $want"
+	behind=true
+	if $write; then
+		# Its manifest must have both builds the image takes.
+		manifest=$(curl -fsSL "$claude_url/$want/manifest.json")
+		for p in linux-x64 linux-arm64; do
+			printf '%s' "$manifest" | grep -q "\"$p\"" || { echo "image-versions: Claude Code $want has no $p build" >&2; exit 1; }
+		done
+		set_arg CLAUDE_VERSION "$want"
+	fi
+fi
+
+have=$(pinned CODEX_VERSION)
+tag=$(latest_tag openai/codex)
+want=${tag#rust-v}
+if [ "$have" != "$want" ]; then
+	echo "codex $have $want"
+	behind=true
+	if $write; then
+		sums=$(curl -fsSL "$github/openai/codex/releases/download/$tag/codex-package_SHA256SUMS")
+		amd64=$(sha256 "$sums" codex-package-x86_64-unknown-linux-musl.tar.gz)
+		arm64=$(sha256 "$sums" codex-package-aarch64-unknown-linux-musl.tar.gz)
+		set_arg CODEX_VERSION "$want"
+		set_arg CODEX_SHA256_AMD64 "$amd64"
+		set_arg CODEX_SHA256_ARM64 "$arm64"
+	fi
+fi
+
+have=$(pinned MISE_VERSION)
+want=$(latest_tag jdx/mise)
+if [ "$have" != "$want" ]; then
+	echo "mise $have $want"
+	behind=true
+	if $write; then
+		sums=$(curl -fsSL "$github/jdx/mise/releases/download/$want/SHASUMS256.txt")
+		amd64=$(sha256 "$sums" "mise-$want-linux-x64")
+		arm64=$(sha256 "$sums" "mise-$want-linux-arm64")
+		set_arg MISE_VERSION "$want"
+		set_arg MISE_SHA256_AMD64 "$amd64"
+		set_arg MISE_SHA256_ARM64 "$arm64"
+	fi
+fi
+
+$behind || echo "up to date"

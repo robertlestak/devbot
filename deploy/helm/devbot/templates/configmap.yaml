@@ -1,0 +1,59 @@
+{{- /* Without a forge serve starts and does nothing. helm lint, which is
+neither an install nor an upgrade, renders the defaults, which can't name one. */}}
+{{- if and (not .Values.config.providers) (or .Release.IsInstall .Release.IsUpgrade) }}
+{{- fail "config.providers: no forge is configured, so devbot would start and do nothing. List your Gitea or GitHub under config.providers, with its bots' credentials in secrets.forge: see values.example-gitea.yaml, values.example-github.yaml and docs/operating.md#forge-setup" }}
+{{- end }}
+{{- $config := deepCopy .Values.config }}
+{{- $oauth := eq (dig "auth" "mode" "none" $config) "oauth" }}
+{{- if and .Values.virtualService.enabled $oauth .Values.virtualService.trustedProxies (not (hasKey $config "trusted_proxies")) }}
+{{- $_ := set $config "trusted_proxies" .Values.virtualService.trustedProxies }}
+{{- end }}
+{{- /* Which env vars carry the Redis user and password is the chart's
+business: it sets them in each pod (devbot.redisEnv). */}}
+{{- $_ := set $config "redis" (merge (dict "username_env" "DEVBOT_REDIS_USERNAME" "password_env" "DEVBOT_REDIS_PASSWORD") ($config.redis | default dict)) }}
+{{- /* In auth.mode none serve answers /api, /mcp and /ui only at names it
+knows (config.allowed_hosts): the Service's, in-cluster, are among them, and
+the VirtualService's and the Ingress's hosts. */}}
+{{- $svc := printf "%s.%s" .Release.Name .Release.Namespace }}
+{{- $hosts := list .Release.Name $svc (printf "%s.svc" $svc) (printf "%s.svc.cluster.local" $svc) }}
+{{- with and .Values.virtualService.enabled .Values.virtualService.host }}{{ if not (contains "*" .) }}{{ $hosts = append $hosts . }}{{ end }}{{ end }}
+{{- with and .Values.ingress.enabled .Values.ingress.host }}{{ if not (contains "*" .) }}{{ $hosts = append $hosts . }}{{ end }}{{ end }}
+{{- $_ := set $config "allowed_hosts" (concat ($config.allowed_hosts | default list) $hosts | uniq) }}
+{{- /* The bundled Redis's Service is named for the release. */}}
+{{- if not (dig "sentinel" "master" "" $config.redis) }}
+{{- $_ := set $config.redis "addr" (include "devbot.redisAddr" (dict "root" .)) }}
+{{- end }}
+{{- if not (hasKey $config "ui") }}
+{{- $ui := dict "enabled" .Values.ui.enabled }}
+{{- with .Values.ui.grafanaUrl }}{{ $_ := set $ui "grafana_url" . }}{{ end }}
+{{- $_ := set $config "ui" $ui }}
+{{- end }}
+{{- /* serve queues a Docker repo's jobs for the -docker ScaledJobs, which only
+exist with docker.mode, so the chart alone says whether there is one. */}}
+{{- if hasKey $config "docker" }}{{ fail "config.docker: set docker.mode and docker.detect instead; the chart renders them" }}{{ end }}
+{{- if not (has .Values.docker.mode (list "" "dind")) }}{{ fail (printf "docker.mode is %q; want dind, or empty for none" .Values.docker.mode) }}{{ end }}
+{{- $_ := set $config "docker" (dict "mode" .Values.docker.mode "detect" .Values.docker.detect) }}
+{{- if not (hasKey $config "pod_labels") }}
+{{- $_ := set $config "pod_labels" (dict "enabled" .Values.podLabels.enabled "instance" .Release.Name) }}
+{{- end }}
+{{- if not (hasKey $config "services") }}
+{{- $s := .Values.services }}
+{{- $svc := dict "enabled" $s.enabled "instance" .Release.Name "ready_timeout" $s.readyTimeout
+      "resources" $s.resources "service_account" (printf "%s-services" .Release.Name)
+      "user_namespaces" .Values.jobs.userNamespaces "network_policy" .Values.networkPolicy.enabled
+      "active_deadline" (dict "implement" (printf "%ds" (int .Values.jobs.implement.activeDeadlineSeconds)) "review" (printf "%ds" (int .Values.jobs.review.activeDeadlineSeconds))) }}
+{{- with .Values.jobs.runtimeClassName }}{{ $_ := set $svc "runtime_class_name" . }}{{ end }}
+{{- with .Values.jobs.nodeSelector }}{{ $_ := set $svc "node_selector" . }}{{ end }}
+{{- with .Values.jobs.tolerations }}{{ $_ := set $svc "tolerations" . }}{{ end }}
+{{- with .Values.jobs.affinity }}{{ $_ := set $svc "affinity" . }}{{ end }}
+{{- with include "devbot.pullSecretNames" . | fromYamlArray }}{{ $_ := set $svc "image_pull_secrets" . }}{{ end }}
+{{- $_ := set $config "services" $svc }}
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-config
+  labels: {{- include "devbot.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+    {{- toYaml $config | nindent 4 }}

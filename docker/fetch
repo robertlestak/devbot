@@ -1,0 +1,16 @@
+#!/bin/sh
+# fetch URL SHA256 OUT: download URL to OUT and keep it only if its SHA-256
+# is SHA256, so a release swapped upstream (or a wrong pin) fails the build.
+set -eu
+[ $# -eq 3 ] || { echo "usage: fetch URL SHA256 OUT" >&2; exit 2; }
+url=$1 sum=$2 out=$3
+case $sum in
+*[!0-9a-f]* | "") echo "fetch: $url: not a SHA-256: '$sum'" >&2; exit 1 ;;
+esac
+[ ${#sum} -eq 64 ] || { echo "fetch: $url: not a SHA-256: '$sum'" >&2; exit 1; }
+curl -fsSL --retry 3 -o "$out" "$url"
+if ! echo "$sum  $out" | sha256sum -c --status -; then
+	echo "fetch: $url: SHA-256 is $(sha256sum "$out" | cut -d' ' -f1), want $sum" >&2
+	rm -f "$out"
+	exit 1
+fi

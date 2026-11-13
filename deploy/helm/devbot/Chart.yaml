@@ -1,0 +1,23 @@
+apiVersion: v2
+name: devbot
+description: Forge-native coding agents - issues in, reviewed pull requests out
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+# ValidatingAdmissionPolicy and native sidecars. jobs.userNamespaces, on by
+# default, needs 1.33 (docs/operating.md#installing).
+kubeVersion: ">=1.30.0-0"
+home: https://github.com/robertlestak/devbot
+sources:
+  - https://github.com/robertlestak/devbot
+maintainers:
+  - name: rob
+    url: https://github.com/robertlestak
+icon: https://raw.githubusercontent.com/robertlestak/devbot/main/docs/icon.svg
+keywords:
+  - ai
+  - coding-agent
+  - gitea
+  - github
+  - keda
+  - mcp

@@ -1,0 +1,37 @@
+{{define "filters"}}<form class="filters" method="get" action="tasks">
+<label>Repo <select name="repo"><option value="">all</option>{{range .Repos}}<option value="{{.}}"{{if eq . $.Repo}} selected{{end}}>{{repo $.OnlyForge .}}</option>{{end}}</select></label>
+<label>State <select name="state"><option value="">all</option>{{range .States}}<option{{if eq . $.State}} selected{{end}}>{{.}}</option>{{end}}</select></label>
+<button type="submit">Filter</button>
+</form>{{end}}
+
+{{define "main"}}<h1>Tasks</h1>
+{{with .Parents}}<h2 class="state parent">parent tasks <span class="count">{{len .}}</span></h2>
+<table>
+<thead><tr><th>Repo</th><th>Issue</th><th>State</th><th>Children</th><th>Note</th></tr></thead>
+<tbody>
+{{range .}}<tr>
+<td data-label="Repo" class="nowrap" title="{{.Repo}}">{{repo $.OnlyForge .Repo}}</td>
+<td data-label="Issue" class="issue"><a class="nowrap" href="{{.URL}}" rel="noopener noreferrer">{{num .Task}}</a> <a href="task?ref={{.Task}}">{{.Title}}</a>{{if or .Requester .Origin}}<div class="sub">{{with .Requester}}for {{.}}{{end}}{{if and .Requester .Origin}}, {{end}}{{with .Origin}}via {{.}}{{end}}</div>{{end}}</td>
+<td data-label="State" class="nowrap"><span class="state {{.State}}{{if attention .State}} attention{{end}}">{{.State}}</span></td>
+<td data-label="Children">{{range .Children}}<div class="nowrap"><a href="task?ref={{.Task}}" title="{{.Task}}">{{repo $.OnlyForge .Task}}</a> <span class="state {{.State}}{{if attention .State}} attention{{end}}">{{.State}}</span></div>{{else}}<span class="sub">none yet</span>{{end}}</td>
+<td data-label="Note">{{with .Note}}<div class="clamp" title="{{.}}">{{.}}</div>{{end}}</td>
+</tr>{{end}}
+</tbody>
+</table>
+{{end}}
+{{range .Groups}}
+<h2 class="state {{.State}}{{if attention .State}} attention{{end}}">{{.State}} <span class="count">{{len .Tasks}}</span></h2>
+<table>
+<thead><tr><th>Repo</th><th>Issue</th><th>In state</th><th>PR</th><th>Latest update</th></tr></thead>
+<tbody>
+{{range .Tasks}}<tr>
+<td data-label="Repo" class="nowrap" title="{{.Repo}}">{{repo $.OnlyForge .Repo}}</td>
+<td data-label="Issue" class="issue"><a class="nowrap" href="{{.URL}}" rel="noopener noreferrer">{{num .Task}}</a> <a href="task?ref={{.Task}}">{{.Title}}</a>{{if or .Requester .Origin}}<div class="sub">{{with .Requester}}for {{.}}{{end}}{{if and .Requester .Origin}}, {{end}}{{with .Origin}}via {{.}}{{end}}</div>{{end}}</td>
+<td data-label="In state" class="nowrap">{{with .StateSince}}<time datetime="{{iso .}}" title="since {{clock .}}">{{age .}}</time>{{end}}</td>
+<td data-label="PR" class="nowrap">{{if .PR}}<a href="{{.PR}}" rel="noopener noreferrer">{{if .PRNumber}}#{{.PRNumber}}{{else}}PR{{end}}</a>{{end}}{{with .Base}} <span class="badge" title="base branch">into {{.}}</span>{{end}}{{if .Automerge}} <span class="badge">automerge</span>{{end}}</td>
+<td data-label="Latest update">{{with .LastUpdate}}<div class="clamp" title="{{.}}">{{.}}</div>{{end}}</td>
+</tr>{{end}}
+</tbody>
+</table>
+{{else}}{{if not .Parents}}<p class="empty">No open tasks{{if or .Repo .State}} match{{end}}.</p>{{end}}{{end}}
+{{end}}

@@ -1,0 +1,50 @@
+name: dockerhub description
+on:
+  push:
+    branches: [main]
+    paths: ['docs/dockerhub/**', '.gitea/workflows/dockerhub-description.yaml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Sets each published Docker Hub repository's short description and overview
+# from docs/dockerhub/<repo>.md, whenever they change on main (or by hand). A
+# fork without the Docker Hub secrets skips it.
+jobs:
+  describe:
+    runs-on: ubuntu-latest
+    env:
+      DOCKER_HUB_USERNAME: ${{ secrets.DOCKER_HUB_USERNAME }}
+      DOCKER_HUB_PAT: ${{ secrets.DOCKER_HUB_PAT }}
+    steps:
+      - name: settings
+        id: cfg
+        run: |
+          if [ -z "$DOCKER_HUB_USERNAME" ] || [ -z "$DOCKER_HUB_PAT" ]; then
+            echo "::notice::DOCKER_HUB_USERNAME or DOCKER_HUB_PAT is not set; not describing"
+            echo "describe=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "describe=true" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.cfg.outputs.describe == 'true'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: describe
+        if: steps.cfg.outputs.describe == 'true'
+        run: |
+          token=$(jq -n --arg u "$DOCKER_HUB_USERNAME" --arg p "$DOCKER_HUB_PAT" '{username: $u, password: $p}' \
+            | curl -fsS -X POST https://hub.docker.com/v2/users/login -H 'Content-Type: application/json' -d @- | jq -r .token)
+          echo "::add-mask::$token"
+          # Docker Hub caps the short description at 100 characters.
+          while IFS='|' read -r repo short; do
+            [ -f "docs/dockerhub/$repo.md" ] || { echo "::error::no docs/dockerhub/$repo.md"; exit 1; }
+            [ ${#short} -le 100 ] || { echo "::error::$repo's short description is over 100 characters"; exit 1; }
+            jq -n --arg d "$short" --rawfile f "docs/dockerhub/$repo.md" '{description: $d, full_description: $f}' \
+              | curl -fsS -X PATCH "https://hub.docker.com/v2/repositories/$DOCKER_HUB_USERNAME/$repo/" \
+                  -H "Authorization: Bearer $token" -H 'Content-Type: application/json' -d @- \
+              | jq -r '"\(.namespace)/\(.name): \(.description)"'
+          done <<'LIST'
+          devbot|Coding agents that work from your issue tracker: an issue or PR in, a reviewed pull request out
+          devbot-codex|devbot's agent sidecar with the OpenAI Codex CLI, for roles on the codex harness
+          devbot-chart|The Helm chart for devbot: coding agents that work from your issue tracker
+          LIST

@@ -1,0 +1,28 @@
+#!/bin/sh
+# Cross-compile the devbot CLI for the release to attach:
+#   hack/release-cli <version> [outdir]
+# writes devbot_<version>_<os>_<arch>.tar.gz for each target and a
+# checksums.txt over them to outdir (dist/ by default). Needs a Go toolchain;
+# without one, run it through hack/go: hack/go hack/release-cli v1.4.2
+set -eu
+
+version=${1:?usage: hack/release-cli <version> [outdir]}
+out=${2:-dist}
+targets="linux/amd64 linux/arm64 darwin/amd64 darwin/arm64"
+
+mkdir -p "$out"
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+
+for t in $targets; do
+  os=${t%/*} arch=${t#*/}
+  name=devbot_${version}_${os}_${arch}
+  mkdir -p "$work/$name"
+  CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -trimpath \
+    -ldflags "-s -w -X main.version=$version" -o "$work/$name/devbot" ./cmd/devbot
+  cp LICENSE README.md "$work/$name/"
+  tar -czf "$out/$name.tar.gz" -C "$work" "$name"
+done
+
+# Names only, so `sha256sum -c checksums.txt` works from the download dir.
+(cd "$out" && sha256sum devbot_"${version}"_*.tar.gz > checksums.txt)

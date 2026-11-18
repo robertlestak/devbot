@@ -1,0 +1,25 @@
+{{define "filters"}}<form class="filters" method="get" action="events">
+<label>Repo <input name="repo" value="{{.Repo}}" placeholder="provider:owner/name"></label>
+<label>Type <select name="type"><option value="">all</option>{{range .Types}}<option{{if eq . $.Type}} selected{{end}}>{{.}}</option>{{end}}</select></label>
+<label>Origin <input name="origin" value="{{.Origin}}" placeholder="prefix"></label>
+<button type="submit">Filter</button>
+</form>{{end}}
+
+{{define "main"}}<h1>Events</h1>
+{{if .Events.Events}}
+<table>
+<thead><tr><th>When</th><th>Type</th><th>Issue</th><th>State</th><th>Summary</th><th>PR</th></tr></thead>
+<tbody>
+{{range .Events.Events}}<tr>
+<td data-label="When" class="nowrap"><time datetime="{{iso .Time}}" title="{{clock .Time}}">{{age .Time}} ago</time></td>
+<td data-label="Type" class="nowrap">{{short .Type}}</td>
+<td data-label="Issue" class="nowrap">{{if .URL}}<a href="{{.URL}}" rel="noopener noreferrer" title="{{.Task}}">{{repo $.OnlyForge .Task}}</a>{{else}}<span title="{{.Task}}">{{repo $.OnlyForge .Task}}</span>{{end}} <a class="sub" href="task?ref={{.Task}}">timeline</a></td>
+<td data-label="State" class="nowrap">{{.State}}</td>
+<td data-label="Summary">{{with .Summary}}<div class="clamp" title="{{.}}">{{.}}</div>{{end}}{{if or .Requester .Origin}}<div class="sub">{{with .Requester}}for {{.}}{{end}}{{if and .Requester .Origin}}, {{end}}{{with .Origin}}via {{.}}{{end}}</div>{{end}}</td>
+<td data-label="PR" class="nowrap">{{with .PR}}<a href="{{.}}" rel="noopener noreferrer">PR</a>{{end}}{{with .Base}} <span class="badge" title="base branch">into {{.}}</span>{{end}}</td>
+</tr>{{end}}
+</tbody>
+</table>
+{{with .Older}}<p><a href="{{.}}">Older events</a></p>{{end}}
+{{else}}<p class="empty">No events{{if or .Repo .Type .Origin}} match{{end}}.</p>{{end}}
+{{end}}

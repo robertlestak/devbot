@@ -1,0 +1,20 @@
+#!/bin/sh
+# fetch-claude VERSION ARCH OUT: Claude Code's native binary for linux/ARCH
+# (amd64 or arm64), checked against the SHA-256 in Anthropic's release
+# manifest for VERSION - what claude.ai/install.sh checks, without running a
+# script from the network.
+set -eu
+[ $# -eq 3 ] || { echo "usage: fetch-claude VERSION ARCH OUT" >&2; exit 2; }
+version=$1 arch=$2 out=$3
+base=${CLAUDE_DOWNLOAD_URL:-https://downloads.claude.ai/claude-code-releases}
+case $arch in
+amd64) platform=linux-x64 ;;
+arm64) platform=linux-arm64 ;;
+*) echo "fetch-claude: unsupported architecture $arch" >&2; exit 1 ;;
+esac
+manifest=$(curl -fsSL --retry 3 "$base/$version/manifest.json")
+got=$(printf '%s' "$manifest" | jq -r .version)
+[ "$got" = "$version" ] || { echo "fetch-claude: the manifest for $version is for '$got'" >&2; exit 1; }
+sum=$(printf '%s' "$manifest" | jq -r --arg p "$platform" '.platforms[$p].checksum // empty')
+[ -n "$sum" ] || { echo "fetch-claude: $version has no $platform build" >&2; exit 1; }
+exec "$(dirname "$0")/fetch" "$base/$version/$platform/claude" "$sum" "$out"

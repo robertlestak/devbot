@@ -1,0 +1,35 @@
+{{define "main"}}{{with .Task}}<h1>{{.Title}}</h1>
+<dl class="facts">
+<dt>Task</dt><dd><code>{{.Task}}</code></dd>
+{{with .Parent}}<dt>Parent task</dt><dd><a href="task?ref={{.}}"><code>{{.}}</code></a></dd>
+{{end}}<dt>State</dt><dd><span class="state {{.State}}{{if attention .State}} attention{{end}}">{{.State}}</span>{{with .StateSince}} for <time datetime="{{iso .}}" title="since {{clock .}}">{{age .}}</time>{{end}}{{if ne .IssueState "open"}} (issue {{.IssueState}}){{end}}</dd>
+{{with .Note}}<dt>Note</dt><dd>{{.}}</dd>
+{{end}}<dt>Issue</dt><dd><a href="{{.URL}}" rel="noopener noreferrer">{{num .Task}}</a></dd>
+{{if .PR}}<dt>PR</dt><dd><a href="{{.PR}}" rel="noopener noreferrer">{{if .PRNumber}}#{{.PRNumber}}{{else}}PR{{end}}</a></dd>{{end}}
+{{with .Base}}<dt>Base</dt><dd><code>{{.}}</code></dd>{{end}}
+{{if .Branch}}<dt>Branch</dt><dd><a href="{{.BranchURL}}" rel="noopener noreferrer"><code>{{.Branch}}</code></a></dd>{{end}}
+{{if ne .Kind "parent"}}<dt>Automerge</dt><dd>{{if .Automerge}}yes{{else}}no{{end}}</dd>{{end}}
+{{with .Origin}}<dt>Origin</dt><dd>{{.}}</dd>{{end}}
+{{with .Requester}}<dt>Requester</dt><dd>{{.}}</dd>{{end}}
+</dl>
+{{if eq .Kind "parent"}}<h2>Child tasks</h2>
+{{if .Children}}<table>
+<thead><tr><th>Task</th><th>State</th><th>PR</th><th>Latest update</th></tr></thead>
+<tbody>
+{{range .Children}}<tr>
+<td data-label="Task" class="issue"><a class="nowrap" href="{{.URL}}" rel="noopener noreferrer">{{.Task}}</a> <a href="task?ref={{.Task}}">{{.Title}}</a></td>
+<td data-label="State" class="nowrap"><span class="state {{.State}}{{if attention .State}} attention{{end}}">{{.State}}</span></td>
+<td data-label="PR" class="nowrap">{{if .PR}}<a href="{{.PR}}" rel="noopener noreferrer">PR</a>{{end}}</td>
+<td data-label="Latest update">{{with .LastUpdate}}<div class="clamp" title="{{.}}">{{.}}</div>{{end}}</td>
+</tr>{{end}}
+</tbody>
+</table>{{else}}<p class="empty">No child tasks yet.</p>{{end}}
+{{end}}<h2>Timeline</h2>
+{{if .Timeline}}<ol class="timeline">
+{{range $i, $e := .Timeline}}<li class="{{.Source}}">
+<time datetime="{{iso .Time}}">{{clock .Time}}</time>
+<span class="badge">{{.Source}}</span> <b>{{short .Type}}</b>{{with .Mode}} <span class="mode">{{.}}</span>{{end}}{{with .Attempt}} <span class="sub">attempt {{.}}</span>{{end}}{{if .PRURL}} <a href="{{.PRURL}}" rel="noopener noreferrer">PR{{with .PR}} #{{.}}{{end}}</a>{{end}}{{with .State}} <span class="sub">&rarr; {{.}}</span>{{end}}
+{{if and .Text (ne .Text .Summary)}}<details id="t{{$i}}"><summary>{{.Summary}}</summary><div class="text">{{.Text}}</div></details>{{else if .Summary}}<div>{{.Summary}}</div>{{end}}
+</li>{{end}}
+</ol>{{else}}<p class="empty">Nothing recorded yet.</p>{{end}}
+{{end}}{{end}}

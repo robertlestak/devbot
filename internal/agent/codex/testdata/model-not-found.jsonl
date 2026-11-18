@@ -1,0 +1,4 @@
+{"type":"thread.started","thread_id":"01a14a07-2d4f-7a91-b6e3-8c0a5f1e2d49"}
+{"type":"turn.started"}
+{"type":"error","message":"unexpected status 400 Bad Request: {\"error\":{\"message\":\"The model `gpt-nope` does not exist or you do not have access to it.\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":\"model_not_found\"}}, url: https://api.openai.com/v1/responses, request id: req_0c9e8d7f6a5b4c3d2e1f0a9b8c7d6e5f"}
+{"type":"turn.failed","error":{"message":"unexpected status 400 Bad Request: {\"error\":{\"message\":\"The model `gpt-nope` does not exist or you do not have access to it.\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":\"model_not_found\"}}, url: https://api.openai.com/v1/responses, request id: req_0c9e8d7f6a5b4c3d2e1f0a9b8c7d6e5f"}}

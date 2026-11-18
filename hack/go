@@ -1,0 +1,4 @@
+#!/bin/sh
+# Run go in a throwaway container, for machines without a Go toolchain.
+exec docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp -e GOPATH=/cache/gopath -e GOCACHE=/cache/build -e GOFLAGS=-buildvcs=false \
+  -v "$HOME/.cache/devbot-go:/cache" -v "$PWD:/src" -w /src golang:1.26.9-trixie "$@"

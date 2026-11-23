@@ -6,6 +6,13 @@ All notable changes to devbot are recorded here. The format follows
 minor release may break things; each breaking change is listed under
 **Breaking** with what to change.
 
+## [Unreleased]
+
+### Changed
+
+- The agent images pin Claude Code 2.1.330 (from 2.1.325), the Codex CLI
+  0.171.0 (from 0.169.0) and mise v2026.11.12 (from v2026.11.8).
+
 ## [0.1.0] - 2026-10-18
 
 The first public release.
@@ -705,4 +712,5 @@ The first public release.
 - Every binary the image build downloads is checked against its published
   SHA-256, and the base images are pinned by digest.
 
+[Unreleased]: https://github.com/robertlestak/devbot/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/robertlestak/devbot/releases/tag/v0.1.0

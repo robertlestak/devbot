@@ -28,7 +28,7 @@ const Name = "claude"
 var envPrefixes = []string{"CLAUDE_", "ANTHROPIC_"}
 
 // efforts maps devbot's effort levels onto --effort, which Claude Code
-// 2.1.325 takes by the same names.
+// 2.1.330 takes by the same names.
 var efforts = map[string]string{"low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max"}
 
 // Harness runs claude -p.
